@@ -1,15 +1,7 @@
 # Signals
 
-Signals provides a simple, lightweight, and easy to use events library for Go.
-It allows you to create a signal, add listeners to it, and emit events
-to the signal. The listeners will be called when the signal is emitted.
-The listeners can be added and removed at any time. Signals
-can be emitted asynchonously or synchronously. Signals can be used to create
-event systems, or to create a simple observer pattern.
-
-Anyone can register a listener to a signal. The signal does not need to know
-who is listening to it. Anyone can emit a signal. The signal does not need to
-know who is emitting it.
+Signals facilitate the development of simple, lightweight, and user-friendly event systems and simplified observer patterns in Go applications.
+It allows you to generate and emit signals as well as manage listeners. The listeners are notified when the signal is emitted (synchronously or asynchronously).
 
 ## Installation
 
@@ -27,14 +19,14 @@ import (
   "github.com/maniartech/signals"
 )
 
-var RecordCreated = signals.New[Record]()
-var RecordUpdated = signals.New[Record]()
-var RecordDeleted = signals.New[Record]()
+var RecordCreated = signals.NewAsync[Record]()
+var RecordUpdated = signals.NewAsync[Record]()
+var RecordDeleted = signals.NewAsync[Record]()
 
 func main() {
 
   // Register a listener to the RecordCreated signal
-  RecordCreated(func(record Record) {
+  RecordCreated.Add(func(record Record) {
     fmt.Println("Record created:", record)
   }, "test")
 
@@ -65,4 +57,4 @@ func main() {
 
 ## License
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
