@@ -11,17 +11,14 @@ import (
 func TestSignal(t *testing.T) {
 
 	var count int
-
 	wg := &sync.WaitGroup{}
 	wg.Add(6)
 
 	testSignal := signals.New[int]()
-
 	testSignal.Add(func(v int) {
 		count += 1
 		wg.Done()
 	})
-
 	testSignal.Add(func(v int) {
 		count += 1
 		wg.Done()
@@ -32,8 +29,8 @@ func TestSignal(t *testing.T) {
 	testSignal.Emit(3)
 
 	assert.Less(t, 0, testSignal.Len()*3)
-
 	wg.Wait()
+
 	assert.Equal(t, 6, count)
 }
 
