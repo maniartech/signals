@@ -6,20 +6,27 @@ type base[T any] struct {
 	subscribersMap map[string]SignalListener[T]
 }
 
-func (s *base[T]) Add(listener SignalListener[T], key ...string) int {
+func (s *base[T]) AddListener(listener SignalListener[T], key ...string) int {
 
 	if len(key) > 0 {
 		if _, ok := s.subscribersMap[key[0]]; ok {
 			return -1
 		}
 		s.subscribersMap[key[0]] = listener
+		s.subscribers = append(s.subscribers, keyedListener[T]{
+			key:      key[0],
+			listener: listener,
+		})
+	} else {
+		s.subscribers = append(s.subscribers, keyedListener[T]{
+			listener: listener,
+		})
 	}
 
-	s.subscribers = append(s.subscribers, keyedListener[T]{listener: listener})
 	return len(s.subscribers)
 }
 
-func (s *base[T]) Remove(key string) int {
+func (s *base[T]) RemoveListener(key string) int {
 	if _, ok := s.subscribersMap[key]; ok {
 		delete(s.subscribersMap, key)
 
