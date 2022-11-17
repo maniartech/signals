@@ -13,11 +13,11 @@ func TestSignal(t *testing.T) {
 	testSignal := signals.New[int]()
 
 	results := make([]int, 0)
-	testSignal.Add(func(v int) {
+	testSignal.AddListener(func(v int) {
 		results = append(results, v)
 	})
 
-	testSignal.Add(func(v int) {
+	testSignal.AddListener(func(v int) {
 		results = append(results, v)
 	})
 
@@ -41,12 +41,12 @@ func TestSignalAsync(t *testing.T) {
 	wg.Add(6)
 
 	testSignal := signals.NewAsync[int]()
-	testSignal.Add(func(v int) {
+	testSignal.AddListener(func(v int) {
 		time.Sleep(100 * time.Millisecond)
 		count += 1
 		wg.Done()
 	})
-	testSignal.Add(func(v int) {
+	testSignal.AddListener(func(v int) {
 		time.Sleep(100 * time.Millisecond)
 		count += 1
 		wg.Done()
@@ -65,4 +65,46 @@ func TestSignalAsync(t *testing.T) {
 	if count != 6 {
 		t.Error("Count must be 6")
 	}
+}
+
+func TestAddRemoveListener(t *testing.T) {
+	testSignal := signals.New[int]()
+
+	t.Run("AddListener", func(t *testing.T) {
+		testSignal.AddListener(func(v int) {
+			// Do something
+		})
+
+		testSignal.AddListener(func(v int) {
+			// Do something
+		}, "test-key")
+
+		if testSignal.Len() != 2 {
+			t.Error("Count must be 2")
+		}
+
+		if count := testSignal.AddListener(func(v int) {
+
+		}, "test-key"); count != -1 {
+			t.Error("Count must be -1")
+		}
+	})
+
+	t.Run("RemoveListener", func(t *testing.T) {
+		if count := testSignal.RemoveListener("test-key"); count != 1 {
+			t.Error("Count must be 1")
+		}
+
+		if count := testSignal.RemoveListener("test-key"); count != -1 {
+			t.Error("Count must be -1")
+		}
+	})
+
+	t.Run("Reset", func(t *testing.T) {
+		testSignal.Reset()
+		if !testSignal.IsEmpty() {
+			t.Error("Count must be 0")
+		}
+	})
+
 }
