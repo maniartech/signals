@@ -2,6 +2,8 @@
 
 The `signals` a small and dependency-free go library that provides simple, lightweight, and user-friendly event systems and simplified observer patterns for your Go applications. It allows you to generate and emit signals as well as manage listeners. The listeners are notified when the signal is emitted (synchronously or asynchronously).
 
+💯 **100% test coverage** 💯
+
 ## Installation
 
 ```bash
