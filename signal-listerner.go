@@ -1,4 +1,7 @@
 package signals
 
+import "context"
+
 // SignalListener provides the function signature for a signal listener.
-type SignalListener[T any] func(T)
+// It accepts a context and a payload of type T.
+type SignalListener[T any] func(context.Context, T)
