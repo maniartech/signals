@@ -1,6 +1,6 @@
 # Signals
 
-The `signals` a small and dependency-free go library that provides simple, lightweight, and user-friendly event systems and simplified observer patterns for your Go applications. It allows you to generate and emit signals as well as manage listeners. The listeners are notified when the signal is emitted (synchronously or asynchronously).
+The `signals` a robust, dependency-free go library that provides simple, thin, and user-friendly pub-sub kind of in-process event system for your Go applications. It allows you to generate and emit signals (synchronously or asynchronously) as well as manage listeners.
 
 💯 **100% test coverage** 💯
 
@@ -26,18 +26,18 @@ var RecordDeleted = signals.NewAsync[Record]()
 
 func main() {
 
-  // Register a listener to the RecordCreated signal
-  RecordCreated.Add(func(record Record) {
+  // Add a listener to the RecordCreated signal
+  RecordCreated.AddListener(func(record Record) {
     fmt.Println("Record created:", record)
-  }, "test")
+  }, "key1") // <- Key is optional useful for removing the listener later
 
-  // Register a listener to the RecordUpdated signal
-  RecordUpdated.Add(func(record Record) {
+  // Add a listener to the RecordUpdated signal
+  RecordUpdated.AddListener(func(record Record) {
     fmt.Println("Record updated:", record)
   })
 
-  // Register a listener to the RecordDeleted signal
-  RecordDeleted.Add(func(record Record) {
+  // Add a listener to the RecordDeleted signal
+  RecordDeleted.AddListener(func(record Record) {
     fmt.Println("Record deleted:", record)
   })
 
