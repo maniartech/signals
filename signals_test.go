@@ -1,6 +1,8 @@
 package signals_test
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -13,17 +15,18 @@ func TestSignal(t *testing.T) {
 	testSignal := signals.New[int]()
 
 	results := make([]int, 0)
-	testSignal.AddListener(func(v int) {
+	testSignal.AddListener(func(ctx context.Context, v int) {
 		results = append(results, v)
 	})
 
-	testSignal.AddListener(func(v int) {
+	testSignal.AddListener(func(ctx context.Context, v int) {
 		results = append(results, v)
 	})
 
-	testSignal.Emit(1)
-	testSignal.Emit(2)
-	testSignal.Emit(3)
+	ctx := context.Background()
+	testSignal.Emit(ctx, 1)
+	testSignal.Emit(ctx, 2)
+	testSignal.Emit(ctx, 3)
 
 	if len(results) != 6 {
 		t.Error("Count must be 6")
@@ -41,20 +44,21 @@ func TestSignalAsync(t *testing.T) {
 	wg.Add(6)
 
 	testSignal := signals.NewAsync[int]()
-	testSignal.AddListener(func(v int) {
+	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(100 * time.Millisecond)
 		count += 1
 		wg.Done()
 	})
-	testSignal.AddListener(func(v int) {
+	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(100 * time.Millisecond)
 		count += 1
 		wg.Done()
 	})
 
-	testSignal.Emit(1)
-	testSignal.Emit(2)
-	testSignal.Emit(3)
+	ctx := context.Background()
+	testSignal.Emit(ctx, 1)
+	testSignal.Emit(ctx, 2)
+	testSignal.Emit(ctx, 3)
 
 	if count >= 6 {
 		t.Error("Not asynchronus! count must be less than 6")
@@ -67,15 +71,72 @@ func TestSignalAsync(t *testing.T) {
 	}
 }
 
+// Test Async with Timeout Context. After the context is cancelled, the
+// listeners should cancel their execution.
+func TestSignalAsyncWithTimeout(t *testing.T) {
+
+	var count int
+	wg := &sync.WaitGroup{}
+	wg.Add(6)
+
+	timeoutCount := 0
+
+	testSignal := signals.NewAsync[int]()
+	testSignal.AddListener(func(ctx context.Context, v int) {
+		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timeoutCount += 1
+			wg.Done()
+		default:
+			count += 1
+			wg.Done()
+		}
+	})
+	testSignal.AddListener(func(ctx context.Context, v int) {
+		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timeoutCount += 1
+			wg.Done()
+		default:
+			count += 1
+			wg.Done()
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	testSignal.Emit(ctx, 1)
+	testSignal.Emit(ctx, 2)
+	testSignal.Emit(ctx, 3)
+
+	if count >= 6 {
+		t.Error("Not asynchronus! count must be less than 6")
+	}
+
+	wg.Wait()
+	fmt.Println("count", count, "timeoutCount", timeoutCount)
+
+	if count != 3 {
+		t.Error("Count must be 4")
+	}
+
+	if timeoutCount != 3 {
+		t.Error("timeoutCount must be 3")
+	}
+}
+
 func TestAddRemoveListener(t *testing.T) {
 	testSignal := signals.New[int]()
 
 	t.Run("AddListener", func(t *testing.T) {
-		testSignal.AddListener(func(v int) {
+		testSignal.AddListener(func(ctx context.Context, v int) {
 			// Do something
 		})
 
-		testSignal.AddListener(func(v int) {
+		testSignal.AddListener(func(ctx context.Context, v int) {
 			// Do something
 		}, "test-key")
 
@@ -83,7 +144,7 @@ func TestAddRemoveListener(t *testing.T) {
 			t.Error("Count must be 2")
 		}
 
-		if count := testSignal.AddListener(func(v int) {
+		if count := testSignal.AddListener(func(ctx context.Context, v int) {
 
 		}, "test-key"); count != -1 {
 			t.Error("Count must be -1")
