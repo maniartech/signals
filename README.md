@@ -16,6 +16,7 @@ go get github.com/maniartech/signals
 package main
 
 import (
+  "context"
   "fmt"
   "github.com/maniartech/signals"
 )
@@ -27,28 +28,30 @@ var RecordDeleted = signals.NewAsync[Record]()
 func main() {
 
   // Add a listener to the RecordCreated signal
-  RecordCreated.AddListener(func(record Record) {
+  RecordCreated.AddListener(func(ctx context.Context, record Record) {
     fmt.Println("Record created:", record)
   }, "key1") // <- Key is optional useful for removing the listener later
 
   // Add a listener to the RecordUpdated signal
-  RecordUpdated.AddListener(func(record Record) {
+  RecordUpdated.AddListener(func(ctx context.Context, record Record) {
     fmt.Println("Record updated:", record)
   })
 
   // Add a listener to the RecordDeleted signal
-  RecordDeleted.AddListener(func(record Record) {
+  RecordDeleted.AddListener(func(ctx context.Context, record Record) {
     fmt.Println("Record deleted:", record)
   })
+  
+  ctx := context.Background()
 
   // Emit the RecordCreated signal
-  RecordCreated.Emit(Record{ID: 1, Name: "John"})
+  RecordCreated.Emit(ctx, Record{ID: 1, Name: "John"})
 
   // Emit the RecordUpdated signal
-  RecordUpdated.Emit(Record{ID: 1, Name: "John Doe"})
+  RecordUpdated.Emit(ctx, Record{ID: 1, Name: "John Doe"})
 
   // Emit the RecordDeleted signal
-  RecordDeleted.Emit(Record{ID: 1, Name: "John Doe"})
+  RecordDeleted.Emit(ctx, Record{ID: 1, Name: "John Doe"})
 }
 ```
 
