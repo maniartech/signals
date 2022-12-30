@@ -20,7 +20,6 @@ package signals
 //  }
 //
 func New[T any]() Signal[T] {
-
 	s := &signal[T]{}
 	s.Reset()
 	return s
