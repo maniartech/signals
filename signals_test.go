@@ -12,7 +12,7 @@ import (
 )
 
 func TestSignal(t *testing.T) {
-	testSignal := signals.New[int]()
+	testSignal := signals.NewSync[int]()
 
 	results := make([]int, 0)
 	testSignal.AddListener(func(ctx context.Context, v int) {
@@ -43,7 +43,7 @@ func TestSignalAsync(t *testing.T) {
 	wg := &sync.WaitGroup{}
 	wg.Add(6)
 
-	testSignal := signals.NewAsync[int]()
+	testSignal := signals.New[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(100 * time.Millisecond)
 		count += 1
@@ -81,7 +81,7 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 
 	timeoutCount := 0
 
-	testSignal := signals.NewAsync[int]()
+	testSignal := signals.New[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(10 * time.Millisecond)
 		select {
