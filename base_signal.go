@@ -2,16 +2,15 @@ package signals
 
 import "context"
 
-// signal is the implementation of the Signal interface.
-type signal[T any] struct {
+// BaseSignal provides the base implementation of the Signal interface.
+//
+type BaseSignal[T any] struct {
 	subscribers []keyedListener[T]
 
 	subscribersMap map[string]SignalListener[T]
-
-	async bool
 }
 
-func (s *signal[T]) AddListener(listener SignalListener[T], key ...string) int {
+func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
 
 	if len(key) > 0 {
 		if _, ok := s.subscribersMap[key[0]]; ok {
@@ -31,7 +30,7 @@ func (s *signal[T]) AddListener(listener SignalListener[T], key ...string) int {
 	return len(s.subscribers)
 }
 
-func (s *signal[T]) RemoveListener(key string) int {
+func (s *BaseSignal[T]) RemoveListener(key string) int {
 	if _, ok := s.subscribersMap[key]; ok {
 		delete(s.subscribersMap, key)
 
@@ -47,16 +46,16 @@ func (s *signal[T]) RemoveListener(key string) int {
 	return -1
 }
 
-func (s *signal[T]) Reset() {
+func (s *BaseSignal[T]) Reset() {
 	s.subscribers = make([]keyedListener[T], 0)
 	s.subscribersMap = make(map[string]SignalListener[T])
 }
 
-func (s *signal[T]) Len() int {
+func (s *BaseSignal[T]) Len() int {
 	return len(s.subscribers)
 }
 
-func (s *signal[T]) IsEmpty() bool {
+func (s *BaseSignal[T]) IsEmpty() bool {
 	return len(s.subscribers) == 0
 }
 
@@ -64,12 +63,6 @@ func (s *signal[T]) IsEmpty() bool {
 // If the context has a deadline or cancellable property, the listeners
 // must respect it. If the signal is async, the listeners are called
 // in a separate goroutine.
-func (s *signal[T]) Emit(ctx context.Context, payload T) {
-	for _, sub := range s.subscribers {
-		if s.async {
-			go sub.listener(ctx, payload)
-		} else {
-			sub.listener(ctx, payload)
-		}
-	}
+func (s *BaseSignal[T]) Emit(ctx context.Context, payload T) {
+	panic("implement me in derived type")
 }
