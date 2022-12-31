@@ -9,11 +9,11 @@ import (
 
 func main() {
 
-	// If the first argument is "-async" then run the async example
-	if len(os.Args) > 1 && os.Args[1] == "-async" {
-		example.RunAsync()
-	} else {
+	// If the first argument is "-sync" then run the async example
+	if len(os.Args) > 1 && os.Args[1] == "-sync" {
 		example.RunSync()
+	} else {
+		example.RunAsync()
 	}
 
 	// Wait for a second to let the signals to be processed

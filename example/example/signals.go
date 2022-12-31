@@ -2,12 +2,12 @@ package example
 
 import "github.com/maniartech/signals"
 
-// Synchonous signals
+// Asynchonous signals
 var RecordCreated = signals.New[Record]()
 var RecordUpdated = signals.New[Record]()
 var RecordDeleted = signals.New[Record]()
 
-// Asynchonous signals
-var RecordCreatedAsync = signals.NewAsync[Record]()
-var RecordUpdatedAsync = signals.NewAsync[Record]()
-var RecordDeletedAsync = signals.NewAsync[Record]()
+// Synchonous signals
+var RecordCreatedSync = signals.NewSync[Record]()
+var RecordUpdatedSync = signals.NewSync[Record]()
+var RecordDeletedSync = signals.NewSync[Record]()
