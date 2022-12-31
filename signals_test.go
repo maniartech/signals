@@ -120,7 +120,7 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 	fmt.Println("count", count, "timeoutCount", timeoutCount)
 
 	if count != 3 {
-		t.Error("Count must be 4")
+		t.Error("Count must be 3")
 	}
 
 	if timeoutCount != 3 {
