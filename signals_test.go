@@ -169,3 +169,17 @@ func TestAddRemoveListener(t *testing.T) {
 	})
 
 }
+
+// TestBaseSignal tests the BaseSignal to make sure
+// Emit throws a panic because it is a base class.
+func TestBaseSignal(t *testing.T) {
+	testSignal := signals.BaseSignal[int]{}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Emit should throw a panic")
+		}
+	}()
+
+	testSignal.Emit(context.Background(), 1)
+}
