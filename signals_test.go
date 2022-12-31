@@ -83,7 +83,7 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 
 	testSignal := signals.NewAsync[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timeoutCount += 1
