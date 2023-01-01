@@ -21,9 +21,9 @@ import (
   "github.com/maniartech/signals"
 )
 
-var RecordCreated = signals.NewAsync[Record]()
-var RecordUpdated = signals.NewAsync[Record]()
-var RecordDeleted = signals.NewAsync[Record]()
+var RecordCreated = signals.New[Record]()
+var RecordUpdated = signals.New[Record]()
+var RecordDeleted = signals.New[Record]()
 
 func main() {
 
