@@ -69,3 +69,7 @@ As a software development firm, ManiarTech® specializes in Golang-based project
 At ManiarTech®, we have a team of Golang experts who are well-versed in all facets of the technology.
 
 In short, if you're looking for experts to assist you with Golang-related projects, don't hesitate to get in touch with us. Send an email to contact@maniartech.com to get in touch.
+
+## 👉🏼 Is your degree of expertise sufficient to qualify you as a "Expert Golang Developer"? 👈🏼 ##
+
+If so, you may be interested in the challenging and rewarding work that is waiting for you. Use careers@maniartech.com to submit your resume.
