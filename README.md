@@ -21,9 +21,9 @@ import (
   "github.com/maniartech/signals"
 )
 
-var RecordCreated = signals.NewAsync[Record]()
-var RecordUpdated = signals.NewAsync[Record]()
-var RecordDeleted = signals.NewAsync[Record]()
+var RecordCreated = signals.New[Record]()
+var RecordUpdated = signals.New[Record]()
+var RecordDeleted = signals.New[Record]()
 
 func main() {
 
@@ -62,3 +62,14 @@ func main() {
 ## License
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
+
+## ✨You Need Some Go Experts, Right? ✨
+
+As a software development firm, ManiarTech® specializes in Golang-based projects. Our team has an in-depth understanding of Enterprise Process Automation, Open Source, and SaaS. Also, we have extensive experience porting code from Python and Node.js to Golang. We have a team of Golang experts here at ManiarTech® that is well-versed in all aspects of the language and its ecosystem.
+At ManiarTech®, we have a team of Golang experts who are well-versed in all facets of the technology.
+
+In short, if you're looking for experts to assist you with Golang-related projects, don't hesitate to get in touch with us. Send an email to contact@maniartech.com to get in touch.
+
+## 👉🏼 Do you consider yourself an "Expert Golang Developer"? 👈🏼 ##
+
+If so, you may be interested in the challenging and rewarding work that is waiting for you. Use careers@maniartech.com to submit your resume.
