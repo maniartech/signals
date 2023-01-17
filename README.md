@@ -4,6 +4,8 @@ The `signals` a robust, dependency-free go library that provides simple, thin, a
 
 💯 **100% test coverage** 💯
 
+[![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=svg)](https://circleci.com/gh/maniartech/signals)
+
 ## Installation
 
 ```bash
