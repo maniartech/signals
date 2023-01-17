@@ -2,9 +2,7 @@
 
 The `signals` a robust, dependency-free go library that provides simple, thin, and user-friendly pub-sub kind of in-process event system for your Go applications. It allows you to generate and emit signals (synchronously or asynchronously) as well as manage listeners.
 
-💯 **100% test coverage** 💯
-
-[![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=svg)](https://circleci.com/gh/maniartech/signals)
+💯 **100% test coverage** [![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=svg)](https://circleci.com/gh/maniartech/signals) 💯
 
 ## Installation
 
