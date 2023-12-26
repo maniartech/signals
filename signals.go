@@ -25,12 +25,19 @@ type Signal[T any] interface {
 	// listener was not found.
 	RemoveListener(key string) int
 
-	// Reset resets the signal. It removes all subscribers.
+	// Reset resets the signal by removing all subscribers from the signal,
+	// effectively clearing the list of subscribers.
+	// This can be used when you want to stop all listeners from receiving
+	// further signals.
 	Reset()
 
 	// Len returns the number of listeners subscribed to the signal.
+	// This can be used to check how many listeners are currently waiting for a signal.
+	// The returned value is of type int.
 	Len() int
 
-	// IsEmpty returns true if the signal has no subscribers.
+	// IsEmpty checks if the signal has any subscribers.
+	// It returns true if the signal has no subscribers, and false otherwise.
+	// This can be used to check if there are any listeners before emitting a signal.
 	IsEmpty() bool
 }
