@@ -2,6 +2,11 @@ package signals
 
 import "context"
 
+type keyedListener[T any] struct {
+	key      string
+	listener SignalListener[T]
+}
+
 // BaseSignal provides the base implementation of the Signal interface.
 //
 type BaseSignal[T any] struct {
