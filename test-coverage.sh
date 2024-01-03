@@ -4,10 +4,19 @@
 # go project. It is intended to be run from the root of the project
 # directory.
 
+# filename is a timestamped filename for the coverage report in the
+# .coverages directory.
+filename=".coverages/coverage-$(date +%s).out"
+
+# If the .coverages directory does not exist, create it.
+if [ ! -d ".coverages" ]; then
+    mkdir .coverages
+fi
+
 echo "Running tests and generating coverage report..."
-go test -coverprofile=coverage.out
+go test -coverprofile=$filename
 
 echo "Opening coverage report..."
-go tool cover -html=coverage.out
+go tool cover -html=$filename
 
 echo "Done."
