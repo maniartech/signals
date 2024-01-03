@@ -32,7 +32,7 @@ func NewSync[T any]() Signal[T] {
 // the type safety of the emitted value.
 // example:
 //
-// package main
+//  package main
 //
 //  import (
 // 	  "fmt"
