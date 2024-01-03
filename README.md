@@ -46,7 +46,7 @@ func main() {
   RecordDeleted.AddListener(func(ctx context.Context, record Record) {
     fmt.Println("Record deleted:", record)
   })
-  
+
   ctx := context.Background()
 
   // Emit the RecordCreated signal
