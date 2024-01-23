@@ -5,7 +5,7 @@ The `signals` a robust, dependency-free go library that provides simple, thin, a
 💯 **100% test coverage** 💯
 
 [![GoReportCard example](https://goreportcard.com/badge/github.com/nanomsg/mangos)](https://goreportcard.com/report/github.com/maniartech/signals)
-[![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)</div>
+[![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
 [![made-with-Go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg)](https://go.dev/)
 [![GoDoc reference example](https://img.shields.io/badge/godoc-reference-blue.svg)](https://godoc.org/github.com/maniartech/signals)
 
@@ -73,8 +73,8 @@ func main() {
 As a software development firm, ManiarTech® specializes in Golang-based projects. Our team has an in-depth understanding of Enterprise Process Automation, Open Source, and SaaS. Also, we have extensive experience porting code from Python and Node.js to Golang. We have a team of Golang experts here at ManiarTech® that is well-versed in all aspects of the language and its ecosystem.
 At ManiarTech®, we have a team of Golang experts who are well-versed in all facets of the technology.
 
-In short, if you're looking for experts to assist you with Golang-related projects, don't hesitate to get in touch with us. Send an email to contact@maniartech.com to get in touch.
+In short, if you're looking for experts to assist you with Golang-related projects, don't hesitate to get in touch with us. Send an email to <contact@maniartech.com> to get in touch.
 
-## 👉🏼 Do you consider yourself an "Expert Golang Developer"? 👈🏼 ##
+## 👉🏼 Do you consider yourself an "Expert Golang Developer"? 👈🏼
 
-If so, you may be interested in the challenging and rewarding work that is waiting for you. Use careers@maniartech.com to submit your resume.
+If so, you may be interested in the challenging and rewarding work that is waiting for you. Use <careers@maniartech.com> to submit your resume.
