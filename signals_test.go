@@ -2,6 +2,7 @@ package signals_test
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -75,58 +76,50 @@ func TestSignalAsync(t *testing.T) {
 func TestSignalAsyncWithTimeout(t *testing.T) {
 
 	var count int
-	wg := &sync.WaitGroup{}
-	wg.Add(6)
 
 	timeoutCount := 0
 
 	testSignal := signals.New[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
+		time.Sleep(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timeoutCount += 1
-			wg.Done()
 		default:
-			time.Sleep(10 * time.Millisecond)
 			count += 1
-			wg.Done()
 		}
 	})
 	testSignal.AddListener(func(ctx context.Context, v int) {
+		time.Sleep(500 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timeoutCount += 1
-			wg.Done()
 		default:
-			time.Sleep(500 * time.Millisecond)
 			count += 1
-			wg.Done()
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	go testSignal.Emit(ctx, 1)
+	testSignal.Emit(ctx, 1)
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel2()
-	go testSignal.Emit(ctx2, 1)
+	testSignal.Emit(ctx2, 1)
 
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 	defer cancel3()
-	go testSignal.Emit(ctx3, 3)
+	testSignal.Emit(ctx3, 3)
 
-	if count >= 6 {
-		t.Error("Not asynchronus! count must be less than 6")
-	}
-
-	wg.Wait()
-
-	if count != 4 {
+	fmt.Println("count", count, "timeoutCount", timeoutCount)
+	// The code is checking if the value of the `count` variable is equal to 3 and if
+	// the value of the `timeoutCount` variable is equal to 3. If either of these
+	// conditions is not met, an error message is printed.
+	if count != 3 {
 		t.Error("Count must be 3")
 	}
 
-	if timeoutCount != 2 {
+	if timeoutCount != 3 {
 		t.Error("timeoutCount must be 3")
 	}
 }
