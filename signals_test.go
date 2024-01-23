@@ -2,7 +2,6 @@ package signals_test
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -111,7 +110,6 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 	defer cancel3()
 	testSignal.Emit(ctx3, 3)
 
-	fmt.Println("count", count, "timeoutCount", timeoutCount)
 	// The code is checking if the value of the `count` variable is equal to 3 and if
 	// the value of the `timeoutCount` variable is equal to 3. If either of these
 	// conditions is not met, an error message is printed.
