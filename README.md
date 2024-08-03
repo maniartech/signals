@@ -4,6 +4,8 @@ The `signals` a robust, dependency-free go library that provides simple, thin, a
 
 💯 **100% test coverage** 💯
 
+⚠️ **Note:** This project is stable, production-ready and complete. It is used in production by [ManiarTech®️](https://maniartech.com) and other companies. Hence, we won't be adding any new features to this project. However, we will continue to maintain it by fixing bugs and keeping it up-to-date with the latest Go versions. We shall however, be adding new features when the need arises and / or requested by the community.
+
 [![GoReportCard example](https://goreportcard.com/badge/github.com/nanomsg/mangos)](https://goreportcard.com/report/github.com/maniartech/signals)
 [![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
 [![made-with-Go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg)](https://go.dev/)
