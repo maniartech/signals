@@ -14,8 +14,6 @@ import (
 // in a separate goroutine.
 type AsyncSignal[T any] struct {
 	BaseSignal[T]
-
-	mu sync.Mutex
 }
 
 // Emit notifies all subscribers of the signal and passes the payload in a
