@@ -23,6 +23,7 @@ type SyncSignal[T any] struct {
 // called synchronously, one after the other.
 //
 // Example:
+//
 //	signal := signals.NewSync[string]()
 //	signal.AddListener(func(ctx context.Context, payload string) {
 //		// Listener implementation
@@ -31,6 +32,8 @@ type SyncSignal[T any] struct {
 //
 //	signal.Emit(context.Background(), "Hello, world!")
 func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, sub := range s.subscribers {
 		sub.listener(ctx, payload)
 	}
