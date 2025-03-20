@@ -32,8 +32,8 @@ type SyncSignal[T any] struct {
 //
 //	signal.Emit(context.Background(), "Hello, world!")
 func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, sub := range s.subscribers {
 		sub.listener(ctx, payload)
 	}

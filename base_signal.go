@@ -25,7 +25,7 @@ type keyedListener[T any] struct {
 //		// Custom implementation for emitting the signal
 //	}
 type BaseSignal[T any] struct {
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	subscribers    []keyedListener[T]
 	subscribersMap map[string]SignalListener[T]
 }
@@ -115,7 +115,7 @@ func (s *BaseSignal[T]) RemoveListener(key string) int {
 func (s *BaseSignal[T]) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.subscribers = make([]keyedListener[T], 0)
 	s.subscribersMap = make(map[string]SignalListener[T])
 }
