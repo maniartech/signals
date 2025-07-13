@@ -1,6 +1,9 @@
 package signals
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // keyedListener represents a combination of a listener and an optional key used for identification.
 type keyedListener[T any] struct {
@@ -12,6 +15,7 @@ type keyedListener[T any] struct {
 // It is intended to be used as an abstract base for underlying signal mechanisms.
 //
 // Example:
+//
 //	type MyDerivedSignal[T any] struct {
 //		BaseSignal[T]
 //		// Additional fields or methods specific to MyDerivedSignal
@@ -21,6 +25,7 @@ type keyedListener[T any] struct {
 //		// Custom implementation for emitting the signal
 //	}
 type BaseSignal[T any] struct {
+	mu             sync.RWMutex
 	subscribers    []keyedListener[T]
 	subscribersMap map[string]SignalListener[T]
 }
@@ -32,6 +37,7 @@ type BaseSignal[T any] struct {
 // -1 if the listener with the same key was already added to the signal.
 //
 // Example:
+//
 //	signal := signals.New[int]()
 //	count := signal.AddListener(func(ctx context.Context, payload int) {
 //		// Listener implementation
@@ -39,6 +45,9 @@ type BaseSignal[T any] struct {
 //	}, "key1")
 //	fmt.Println("Number of subscribers after adding listener:", count)
 func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if len(key) > 0 {
 		if _, ok := s.subscribersMap[key[0]]; ok {
 			return -1
@@ -62,6 +71,7 @@ func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) i
 // listener was not found.
 //
 // Example:
+//
 //	signal := signals.New[int]()
 //	signal.AddListener(func(ctx context.Context, payload int) {
 //		// Listener implementation
@@ -70,6 +80,9 @@ func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) i
 //	count := signal.RemoveListener("key1")
 //	fmt.Println("Number of subscribers after removing listener:", count)
 func (s *BaseSignal[T]) RemoveListener(key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if _, ok := s.subscribersMap[key]; ok {
 		delete(s.subscribersMap, key)
 
@@ -91,6 +104,7 @@ func (s *BaseSignal[T]) RemoveListener(key string) int {
 // further signals.
 //
 // Example:
+//
 //	signal := signals.New[int]()
 //	signal.AddListener(func(ctx context.Context, payload int) {
 //		// Listener implementation
@@ -99,6 +113,9 @@ func (s *BaseSignal[T]) RemoveListener(key string) int {
 //	signal.Reset() // Removes all listeners
 //	fmt.Println("Number of subscribers after resetting:", signal.Len())
 func (s *BaseSignal[T]) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.subscribers = make([]keyedListener[T], 0)
 	s.subscribersMap = make(map[string]SignalListener[T])
 }
@@ -108,6 +125,7 @@ func (s *BaseSignal[T]) Reset() {
 // The returned value is of type int.
 //
 // Example:
+//
 //	signal := signals.New[int]()
 //	signal.AddListener(func(ctx context.Context, payload int) {
 //		// Listener implementation
@@ -123,6 +141,7 @@ func (s *BaseSignal[T]) Len() int {
 // This can be used to check if there are any listeners before emitting a signal.
 //
 // Example:
+//
 //	signal := signals.New[int]()
 //	fmt.Println("Is signal empty?", signal.IsEmpty()) // Should print true
 //	signal.AddListener(func(ctx context.Context, payload int) {
@@ -138,6 +157,7 @@ func (s *BaseSignal[T]) IsEmpty() bool {
 // implemented by a derived type.
 //
 // Example:
+//
 //	type MyDerivedSignal[T any] struct {
 //		BaseSignal[T]
 //		// Additional fields or methods specific to MyDerivedSignal

@@ -14,8 +14,6 @@ import (
 // in a separate goroutine.
 type AsyncSignal[T any] struct {
 	BaseSignal[T]
-
-	mu sync.Mutex
 }
 
 // Emit notifies all subscribers of the signal and passes the payload in a
@@ -39,8 +37,7 @@ type AsyncSignal[T any] struct {
 //
 //	signal.Emit(context.Background(), "Hello, world!")
 func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
 
 	var wg sync.WaitGroup
 
@@ -51,6 +48,7 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 			listener(ctx, payload)
 		}(sub.listener)
 	}
+	s.mu.RUnlock()
 
 	wg.Wait()
 }
