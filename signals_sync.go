@@ -29,12 +29,13 @@ type SyncSignal[T any] struct {
 //		// Listener implementation
 //		// ...
 //	})
-//
-//	signal.Emit(context.Background(), "Hello, world!")
+
 func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, sub := range s.subscribers {
+	subscribersCopy := make([]keyedListener[T], len(s.subscribers))
+	copy(subscribersCopy, s.subscribers)
+	s.mu.RUnlock()
+	for _, sub := range subscribersCopy {
 		sub.listener(ctx, payload)
 	}
 }

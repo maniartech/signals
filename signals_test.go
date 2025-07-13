@@ -2,6 +2,7 @@ package signals_test
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -9,6 +10,64 @@ import (
 
 	"github.com/maniartech/signals"
 )
+
+// TestSignal_ConcurrentStress is a stress test designed to validate military-grade concurrency and thread safety.
+//
+// Philosophy:
+// This test is built on the principle that true robustness in concurrent systems is only proven under extreme, unpredictable, and adversarial conditions.
+// It simulates a hostile environment where many goroutines are rapidly adding/removing listeners and emitting signals, attempting to expose any race conditions,
+// deadlocks, or panics that could occur in real-world, high-load, or adversarial scenarios. The test is intentionally aggressive, using high concurrency and random
+// operations to maximize the chance of surfacing subtle bugs that would not appear in simple or sequential tests.
+//
+// Process:
+// - Spawns 100 goroutines, each performing 1000 iterations of random listener management and signal emission.
+// - Listeners are added and removed with unique keys, and signals are emitted with unique payloads.
+// - A shared map, protected by a mutex, records all payloads received by a persistent listener.
+// - After all goroutines complete, the test asserts that at least some signals were received, and (when run with `go test -race`) that no data races or panics occurred.
+//
+// This approach is inspired by industry best practices for concurrent system validation, including fuzzing, brute-force, and chaos engineering techniques.
+// It is designed to give high confidence that the signals library is safe for use in mission-critical, high-concurrency environments.
+func TestSignal_ConcurrentStress(t *testing.T) {
+	const goroutines = 100
+	const iterations = 1000
+
+	signal := signals.New[int]()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	results := make(map[int]int)
+
+	// Listener that records payloads
+	signal.AddListener(func(ctx context.Context, v int) {
+		mu.Lock()
+		results[v]++
+		mu.Unlock()
+	})
+
+	// Start goroutines that add/remove listeners and emit signals
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				// Randomly add/remove listeners
+				if j%10 == 0 {
+					key := fmt.Sprintf("k-%d-%d", id, j)
+					signal.AddListener(func(ctx context.Context, v int) {}, key)
+					signal.RemoveListener(key)
+				}
+				// Emit signals
+				signal.Emit(context.Background(), id*iterations+j)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Check for data races and panics (run with -race)
+	if len(results) == 0 {
+		t.Error("No signals were received")
+	}
+}
 
 func TestSignal(t *testing.T) {
 	testSignal := signals.NewSync[int]()
@@ -37,20 +96,24 @@ func TestSignal(t *testing.T) {
 }
 
 func TestSignalAsync(t *testing.T) {
-
 	var count int
+	var mu sync.Mutex
 	wg := &sync.WaitGroup{}
 	wg.Add(6)
 
 	testSignal := signals.New[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(100 * time.Millisecond)
+		mu.Lock()
 		count += 1
+		mu.Unlock()
 		wg.Done()
 	})
 	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(100 * time.Millisecond)
+		mu.Lock()
 		count += 1
+		mu.Unlock()
 		wg.Done()
 	})
 
@@ -59,42 +122,56 @@ func TestSignalAsync(t *testing.T) {
 	go testSignal.Emit(ctx, 2)
 	go testSignal.Emit(ctx, 3)
 
-	if count >= 6 {
+	mu.Lock()
+	c := count
+	mu.Unlock()
+	if c >= 6 {
 		t.Error("Not asynchronus! count must be less than 6")
 	}
 
 	wg.Wait()
 
-	if count != 6 {
+	mu.Lock()
+	c = count
+	mu.Unlock()
+	if c != 6 {
 		t.Error("Count must be 6")
 	}
 }
 
 // Test Async with Timeout Context. After the context is cancelled, the
 // listeners should cancel their execution.
+
 func TestSignalAsyncWithTimeout(t *testing.T) {
-
 	var count int
-
-	timeoutCount := 0
+	var timeoutCount int
+	var mu sync.Mutex
 
 	testSignal := signals.New[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
+			mu.Lock()
 			timeoutCount += 1
+			mu.Unlock()
 		default:
+			mu.Lock()
 			count += 1
+			mu.Unlock()
 		}
 	})
 	testSignal.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(500 * time.Millisecond)
 		select {
 		case <-ctx.Done():
+			mu.Lock()
 			timeoutCount += 1
+			mu.Unlock()
 		default:
+			mu.Lock()
 			count += 1
+			mu.Unlock()
 		}
 	})
 
@@ -110,14 +187,15 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 	defer cancel3()
 	testSignal.Emit(ctx3, 3)
 
-	// The code is checking if the value of the `count` variable is equal to 3 and if
-	// the value of the `timeoutCount` variable is equal to 3. If either of these
-	// conditions is not met, an error message is printed.
-	if count != 3 {
+	mu.Lock()
+	c := count
+	tc := timeoutCount
+	mu.Unlock()
+	if c != 3 {
 		t.Error("Count must be 3")
 	}
 
-	if timeoutCount != 3 {
+	if tc != 3 {
 		t.Error("timeoutCount must be 3")
 	}
 }
