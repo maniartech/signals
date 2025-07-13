@@ -28,6 +28,45 @@ type BaseSignal[T any] struct {
 	mu             sync.RWMutex
 	subscribers    []keyedListener[T]
 	subscribersMap map[string]SignalListener[T]
+	growthFunc     func(currentCap int) int
+}
+
+// SignalOptions allows advanced users to configure allocation and growth strategy for listeners.
+type SignalOptions struct {
+	InitialCapacity int
+	GrowthFunc      func(currentCap int) int
+}
+
+// Default values for backward compatibility
+var defaultInitialCapacity = 11
+var defaultPrimes = []int{11, 17, 23, 31, 47, 67, 97, 127, 197, 257, 389, 521, 769, 1031, 1543, 2053, 3079, 4099, 6151, 8209, 12289, 16381, 24593, 32771, 49157, 65537, 98317, 131071, 196613, 262147, 393241, 524287, 786433, 1048579, 1572869, 2097153, 3145739, 4194301, 6291469, 8388617, 12582917, 16777213, 25165843, 33554467, 50331653, 67108859, 100663319, 134217757, 201326611, 268435459, 402653189, 536870923, 805306457, 1073741827, 1610612741, 2147483647}
+
+func defaultGrowthFunc(currentCap int) int {
+	for _, p := range defaultPrimes {
+		if p > currentCap {
+			return p
+		}
+	}
+	return currentCap*2 + 1 // fallback
+}
+
+// NewBaseSignal creates a BaseSignal with optional allocation/growth options.
+func NewBaseSignal[T any](opts *SignalOptions) *BaseSignal[T] {
+	initCap := defaultInitialCapacity
+	growth := defaultGrowthFunc
+	if opts != nil {
+		if opts.InitialCapacity > 0 {
+			initCap = opts.InitialCapacity
+		}
+		if opts.GrowthFunc != nil {
+			growth = opts.GrowthFunc
+		}
+	}
+	return &BaseSignal[T]{
+		subscribers:    make([]keyedListener[T], 0, initCap),
+		subscribersMap: make(map[string]SignalListener[T]),
+		growthFunc:     growth,
+	}
 }
 
 // AddListener adds a listener to the signal. The listener will be called
@@ -47,6 +86,10 @@ type BaseSignal[T any] struct {
 func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if listener == nil {
+		panic("listener cannot be nil")
+	}
 
 	if len(key) > 0 {
 		if _, ok := s.subscribersMap[key[0]]; ok {
