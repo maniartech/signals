@@ -13,6 +13,7 @@ func BenchmarkSignalEmit_SingleListener(b *testing.B) {
 	signal := signals.New[int]()
 	signal.AddListener(func(ctx context.Context, v int) {})
 	ctx := context.Background()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		signal.Emit(ctx, i)
@@ -26,6 +27,7 @@ func BenchmarkSignalEmit_ManyListeners(b *testing.B) {
 		signal.AddListener(func(ctx context.Context, v int) {})
 	}
 	ctx := context.Background()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		signal.Emit(ctx, i)
@@ -37,6 +39,7 @@ func BenchmarkSignalEmit_Concurrent(b *testing.B) {
 	signal := signals.New[int]()
 	signal.AddListener(func(ctx context.Context, v int) {})
 	ctx := context.Background()
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for i := 0; pb.Next(); i++ {
@@ -49,6 +52,7 @@ func BenchmarkSignalEmit_Concurrent(b *testing.B) {
 func BenchmarkSignalAddRemoveListener_Concurrent(b *testing.B) {
 	signal := signals.New[int]()
 	var mu sync.Mutex
+	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for i := 0; pb.Next(); i++ {
