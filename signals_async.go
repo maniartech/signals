@@ -34,21 +34,20 @@ type AsyncSignal[T any] struct {
 //		// Listener implementation
 //		// ...
 //	})
-//
-//	signal.Emit(context.Background(), "Hello, world!")
+
 func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	s.mu.RLock()
+	subscribersCopy := make([]keyedListener[T], len(s.subscribers))
+	copy(subscribersCopy, s.subscribers)
+	s.mu.RUnlock()
 
 	var wg sync.WaitGroup
-
-	for _, sub := range s.subscribers {
+	for _, sub := range subscribersCopy {
 		wg.Add(1)
 		go func(listener func(context.Context, T)) {
 			defer wg.Done()
 			listener(ctx, payload)
 		}(sub.listener)
 	}
-	s.mu.RUnlock()
-
 	wg.Wait()
 }
