@@ -62,6 +62,32 @@ func main() {
 }
 ```
 
+
+## Benchmarks
+
+
+### Benchmark Philosophy
+
+These benchmarks are designed to measure the real-world performance and scalability of the signals library under a variety of usage patterns. Each benchmark targets a specific aspect of signal/event system performance that is critical for robust, production-grade applications:
+
+- **Signal Emit (Single Listener):** Measures the minimal overhead of emitting a signal to a single listener. This reflects the best-case latency for the most common use case—fast, in-process event notification.
+- **Signal Emit (Many Listeners, 100):** Tests the cost of emitting to a large number of listeners. This simulates scenarios where many components need to react to the same event, and demonstrates how the library scales with listener count.
+- **Signal Emit (Concurrent):** Evaluates the library's ability to handle extremely high-frequency, concurrent signal emissions from many goroutines. This is crucial for high-throughput, parallel workloads and validates thread safety under stress.
+- **Add/Remove Listener (Concurrent):** Measures the performance of dynamically adding and removing listeners while signals are being emitted. This is important for systems where listeners are frequently registered/unregistered at runtime, and tests the efficiency and safety of listener management.
+
+Together, these benchmarks provide a comprehensive view of both the raw speed and the concurrency characteristics of the signals package. They ensure the library is suitable for demanding, high-concurrency, and low-latency applications.
+
+The following benchmarks were run on an AMD Ryzen 7 5700G (Windows, Go 1.XX):
+
+| Benchmark                                 | Iterations   | Time per op (ns) |
+|--------------------------------------------|--------------|------------------|
+| Signal Emit (Single Listener)              |  19,319,023  |          618.3   |
+| Signal Emit (Many Listeners, 100)          |     532,440  |       22,903.0   |
+| Signal Emit (Concurrent)                   | 100,000,000  |          107.5   |
+| Add/Remove Listener (Concurrent)           |  84,484,135  |          134.8   |
+
+These results demonstrate high performance and scalability under both sequential and concurrent workloads. The signals package is suitable for demanding, high-concurrency applications.
+
 ## Documentation
 
 [![GoDoc](https://godoc.org/github.com/maniartech/signals?status.svg)](https://godoc.org/github.com/maniartech/signals)
