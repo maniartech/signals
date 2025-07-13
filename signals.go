@@ -97,3 +97,10 @@ type Signal[T any] interface {
 	//	fmt.Println("Is signal empty?", signal.IsEmpty()) // Should print false
 	IsEmpty() bool
 }
+
+// NewWithOptions creates a new async Signal with custom allocation/growth options.
+func NewWithOptions[T any](opts *SignalOptions) Signal[T] {
+	return &AsyncSignal[T]{
+		BaseSignal: *NewBaseSignal[T](opts),
+	}
+}

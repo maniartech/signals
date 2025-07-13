@@ -22,7 +22,8 @@ func BenchmarkSignalEmit_SingleListener(b *testing.B) {
 
 // Benchmark emitting signals with many listeners
 func BenchmarkSignalEmit_ManyListeners(b *testing.B) {
-	signal := signals.New[int]()
+	opts := &signals.SignalOptions{InitialCapacity: 101} // next prime after 100
+	signal := signals.NewWithOptions[int](opts)
 	for i := 0; i < 100; i++ {
 		signal.AddListener(func(ctx context.Context, v int) {})
 	}
