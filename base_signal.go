@@ -120,39 +120,6 @@ func (s *BaseSignal[T]) Reset() {
 	s.subscribersMap = make(map[string]SignalListener[T])
 }
 
-// Len returns the number of listeners subscribed to the signal.
-// This can be used to check how many listeners are currently waiting for a signal.
-// The returned value is of type int.
-//
-// Example:
-//
-//	signal := signals.New[int]()
-//	signal.AddListener(func(ctx context.Context, payload int) {
-//		// Listener implementation
-//		// ...
-//	})
-//	fmt.Println("Number of subscribers:", signal.Len())
-func (s *BaseSignal[T]) Len() int {
-	return len(s.subscribers)
-}
-
-// IsEmpty checks if the signal has any subscribers.
-// It returns true if the signal has no subscribers, and false otherwise.
-// This can be used to check if there are any listeners before emitting a signal.
-//
-// Example:
-//
-//	signal := signals.New[int]()
-//	fmt.Println("Is signal empty?", signal.IsEmpty()) // Should print true
-//	signal.AddListener(func(ctx context.Context, payload int) {
-//		// Listener implementation
-//		// ...
-//	})
-//	fmt.Println("Is signal empty?", signal.IsEmpty()) // Should print false
-func (s *BaseSignal[T]) IsEmpty() bool {
-	return len(s.subscribers) == 0
-}
-
 // Emit is not implemented in BaseSignal and panics if called. It should be
 // implemented by a derived type.
 //
@@ -168,4 +135,16 @@ func (s *BaseSignal[T]) IsEmpty() bool {
 //	}
 func (s *BaseSignal[T]) Emit(ctx context.Context, payload T) {
 	panic("implement me in derived type")
+}
+
+func (s *BaseSignal[T]) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.subscribers)
+}
+
+func (s *BaseSignal[T]) IsEmpty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.subscribers) == 0
 }
