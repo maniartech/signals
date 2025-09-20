@@ -101,6 +101,6 @@ type Signal[T any] interface {
 // NewWithOptions creates a new async Signal with custom allocation/growth options.
 func NewWithOptions[T any](opts *SignalOptions) Signal[T] {
 	return &AsyncSignal[T]{
-		BaseSignal: *NewBaseSignal[T](opts),
+		baseSignal: NewBaseSignal[T](opts),
 	}
 }

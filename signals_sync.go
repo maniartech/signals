@@ -9,7 +9,7 @@ import (
 // It provides a synchronous way of notifying all subscribers of a signal.
 // The type parameter `T` is a placeholder for any type.
 type SyncSignal[T any] struct {
-	BaseSignal[T]
+	baseSignal *BaseSignal[T]
 }
 
 var syncSubscribersPool = sync.Pool{
@@ -45,6 +45,36 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 	return len(s.subscribers)
 }
 
+// AddListener adds a listener to the signal. Promoted from baseSignal.
+func (s *SyncSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
+	return s.baseSignal.AddListener(listener, key...)
+}
+
+// AddListenerWithErr adds an error-returning listener. Promoted from baseSignal.
+func (s *SyncSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
+	return s.baseSignal.AddListenerWithErr(listener, key...)
+}
+
+// RemoveListener removes a listener from the signal. Promoted from baseSignal.
+func (s *SyncSignal[T]) RemoveListener(key string) int {
+	return s.baseSignal.RemoveListener(key)
+}
+
+// Reset resets the signal. Promoted from baseSignal.
+func (s *SyncSignal[T]) Reset() {
+	s.baseSignal.Reset()
+}
+
+// Len returns the number of listeners. Promoted from baseSignal.
+func (s *SyncSignal[T]) Len() int {
+	return s.baseSignal.Len()
+}
+
+// IsEmpty checks if the signal has any subscribers. Promoted from baseSignal.
+func (s *SyncSignal[T]) IsEmpty() bool {
+	return s.baseSignal.IsEmpty()
+}
+
 // Emit notifies all subscribers of the signal and passes the payload in a
 // synchronous way.
 func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
@@ -52,16 +82,16 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
-	s.mu.RLock()
-	n := len(s.subscribers)
+	s.baseSignal.mu.RLock()
+	n := len(s.baseSignal.subscribers)
 	if n == 0 {
-		s.mu.RUnlock()
+		s.baseSignal.mu.RUnlock()
 		return
 	}
 	// Zero-allocation fast path for single listener, no key
-	if n == 1 && s.subscribers[0].key == "" {
-		listener := s.subscribers[0].listener
-		s.mu.RUnlock()
+	if n == 1 && s.baseSignal.subscribers[0].key == "" {
+		listener := s.baseSignal.subscribers[0].listener
+		s.baseSignal.mu.RUnlock()
 		if listener != nil {
 			if ctx != nil && ctx.Err() != nil {
 				return
@@ -82,8 +112,8 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 	} else {
 		subscribersCopy = make([]keyedListener[T], n)
 	}
-	copy(subscribersCopy, s.subscribers)
-	s.mu.RUnlock()
+	copy(subscribersCopy, s.baseSignal.subscribers)
+	s.baseSignal.mu.RUnlock()
 	// Use references in loop to avoid copying
 	for i := range subscribersCopy {
 		// Stop invoking further listeners if the context is canceled
@@ -117,19 +147,19 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 		}
 	}
 
-	s.mu.RLock()
-	n := len(s.subscribers)
+	s.baseSignal.mu.RLock()
+	n := len(s.baseSignal.subscribers)
 	if n == 0 {
-		s.mu.RUnlock()
+		s.baseSignal.mu.RUnlock()
 		if ctx != nil {
 			return ctx.Err()
 		}
 		return nil
 	}
 	// Zero-allocation fast path for single listener, no key
-	if n == 1 && s.subscribers[0].key == "" {
-		l := s.subscribers[0]
-		s.mu.RUnlock()
+	if n == 1 && s.baseSignal.subscribers[0].key == "" {
+		l := s.baseSignal.subscribers[0]
+		s.baseSignal.mu.RUnlock()
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -159,8 +189,8 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 	} else {
 		subscribersCopy = make([]keyedListener[T], n)
 	}
-	copy(subscribersCopy, s.subscribers)
-	s.mu.RUnlock()
+	copy(subscribersCopy, s.baseSignal.subscribers)
+	s.baseSignal.mu.RUnlock()
 
 	// Ensure cleanup even on early return
 	defer func() {

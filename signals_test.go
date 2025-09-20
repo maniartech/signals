@@ -11,6 +11,81 @@ import (
 	"github.com/maniartech/signals"
 )
 
+// TestInterfaceCompliance verifies that AsyncSignal and SyncSignal
+// implement the Signal interface correctly after hiding BaseSignal.
+func TestInterfaceCompliance(t *testing.T) {
+	// Test that New() returns a Signal[T] that works
+	var asyncSig signals.Signal[int] = signals.New[int]()
+
+	// Test that NewSync() returns a Signal[T] that works
+	var syncSig signals.Signal[int] = signals.NewSync[int]()
+
+	// Test basic operations on both
+	testSignalInterface(t, asyncSig, "AsyncSignal")
+	testSignalInterface(t, syncSig, "SyncSignal")
+}
+
+func testSignalInterface(t *testing.T, sig signals.Signal[int], name string) {
+	t.Run(name, func(t *testing.T) {
+		// Test AddListener
+		count := sig.AddListener(func(ctx context.Context, v int) {})
+		if count != 1 {
+			t.Errorf("Expected 1 listener, got %d", count)
+		}
+
+		// Test Len
+		if sig.Len() != 1 {
+			t.Errorf("Expected Len() == 1, got %d", sig.Len())
+		}
+
+		// Test IsEmpty
+		if sig.IsEmpty() {
+			t.Error("Expected IsEmpty() == false")
+		}
+
+		// Test AddListener with key
+		count = sig.AddListener(func(ctx context.Context, v int) {}, "key1")
+		if count != 2 {
+			t.Errorf("Expected 2 listeners, got %d", count)
+		}
+
+		// Test RemoveListener
+		count = sig.RemoveListener("key1")
+		if count != 1 {
+			t.Errorf("Expected 1 listener after removal, got %d", count)
+		}
+
+		// Test Emit
+		sig.Emit(context.Background(), 42)
+
+		// Test Reset
+		sig.Reset()
+		if !sig.IsEmpty() {
+			t.Error("Expected IsEmpty() == true after Reset()")
+		}
+	})
+}
+
+// TestSyncSignalSpecificMethods tests methods specific to SyncSignal
+// that are available when type-asserting to the concrete type.
+func TestSyncSignalSpecificMethods(t *testing.T) {
+	syncSig := signals.NewSync[int]().(*signals.SyncSignal[int])
+
+	// Test AddListenerWithErr
+	count := syncSig.AddListenerWithErr(func(ctx context.Context, v int) error {
+		return nil
+	})
+	if count != 1 {
+		t.Errorf("Expected 1 listener, got %d", count)
+	}
+
+	// Test TryEmit
+	err := syncSig.TryEmit(context.Background(), 42)
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+}
+
 // TestSignal_ConcurrentStress is a stress test designed to validate military-grade concurrency and thread safety.
 //
 // Philosophy:
