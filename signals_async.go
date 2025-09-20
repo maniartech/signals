@@ -16,8 +16,20 @@ import (
 type AsyncSignal[T any] struct {
 	BaseSignal[T]
 	workerPoolOnce sync.Once
-	workerPool     chan func()
+	workerPool     chan *emitTask[T]
 	poolSize       int
+}
+
+// emitTask is used to avoid per-listener closure allocations in async emit.
+type emitTask[T any] struct {
+	ctx      context.Context
+	payload  T
+	listener SignalListener[T]
+	wg       *sync.WaitGroup
+}
+
+var emitTaskPool = sync.Pool{
+	New: func() any { return new(emitTask[any]) },
 }
 
 // Emit notifies all subscribers of the signal and passes the payload in a
@@ -48,11 +60,19 @@ func (s *AsyncSignal[T]) ensureWorkerPool(size int) {
 			size = 2 * runtime.NumCPU()
 		}
 		s.poolSize = size
-		s.workerPool = make(chan func(), size)
+		s.workerPool = make(chan *emitTask[T], size)
 		for i := 0; i < size; i++ {
 			go func() {
-				for f := range s.workerPool {
-					f()
+				for task := range s.workerPool {
+					task.listener(task.ctx, task.payload)
+					task.wg.Done()
+					// Reset and put back in pool
+					task.ctx = nil
+					var zero T
+					task.payload = zero
+					task.listener = nil
+					task.wg = nil
+					emitTaskPool.Put(task)
 				}
 			}()
 		}
@@ -94,19 +114,46 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	s.ensureWorkerPool(n)
 
 	var wg sync.WaitGroup
-	// Use references in loop to avoid copying
-	for i := range subscribersCopy {
-		sub := &subscribersCopy[i]
-		if sub.listener != nil {
-			wg.Add(1)
-			listener := sub.listener
-			s.workerPool <- func() {
-				defer wg.Done()
-				listener(ctx, payload)
+	threshold := 16
+	if n <= threshold {
+		// Fast path: direct goroutine spawn for small N
+		for i := range subscribersCopy {
+			sub := &subscribersCopy[i]
+			if sub.listener != nil {
+				wg.Add(1)
+				go func(listener SignalListener[T]) {
+					defer wg.Done()
+					listener(ctx, payload)
+				}(sub.listener)
 			}
 		}
+		wg.Wait()
+	} else {
+		// Pooled worker/tasks for large N
+		for i := range subscribersCopy {
+			sub := &subscribersCopy[i]
+			if sub.listener != nil {
+				wg.Add(1)
+				poolVal := emitTaskPool.Get()
+				var task *emitTask[T]
+				if poolVal != nil {
+					if t, ok := poolVal.(*emitTask[T]); ok {
+						task = t
+					} else {
+						task = new(emitTask[T])
+					}
+				} else {
+					task = new(emitTask[T])
+				}
+				task.ctx = ctx
+				task.payload = payload
+				task.listener = sub.listener
+				task.wg = &wg
+				s.workerPool <- task
+			}
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 	// Reset and put back in pool
 	for i := range subscribersCopy {
 		var zero keyedListener[T]
