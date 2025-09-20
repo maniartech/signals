@@ -84,11 +84,6 @@ func (s *AsyncSignal[T]) AddListener(listener SignalListener[T], key ...string) 
 	return s.baseSignal.AddListener(listener, key...)
 }
 
-// AddListenerWithErr adds an error-returning listener. Promoted from baseSignal.
-func (s *AsyncSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
-	return s.baseSignal.AddListenerWithErr(listener, key...)
-}
-
 // RemoveListener removes a listener from the signal. Promoted from baseSignal.
 func (s *AsyncSignal[T]) RemoveListener(key string) int {
 	return s.baseSignal.RemoveListener(key)
