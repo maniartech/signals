@@ -9,7 +9,13 @@
 
 ## 🚀 What is Signals?
 
-**Signals** is a **military-grade, high-performance Go library** that provides lightning-fast, thread-safe, and zero-allocation event signaling for modern applications. Built from the ground up for **extreme performance** and **rock-solid reliability**, it enables decoupled communication between components with nanosecond-level precision.
+**Signals** is a **military-grade, high-performance Go library** for **in-process event communication** within monolithic Go applications. Built from the ground up for **extreme performance** and **rock-solid reliability**, it enables decoupled communication between **packages and components within the same process** with nanosecond-level precision.
+
+### 🎯 **Architecture Scope**
+- ✅ **In-Process Communication**: Perfect for monolithic Go applications
+- ✅ **Package Coordination**: Events between Go packages in same binary
+- ✅ **Component Decoupling**: Loose coupling within single application
+- ❌ **NOT for Distributed Systems**: Use message brokers for microservices
 
 ```go
 // Lightning-fast event processing

@@ -1,8 +1,269 @@
 # 🚀 Getting Started with Signals
 
-> **From zero to production-ready event system in 5 minutes**
+> **From zero to production-ready in-process event system in 5 minutes**
 
-Welcome to the fastest, most reliable event system for Go! This guide will get you up and running with military-grade signal processing in no time.
+Welcome to the fastest, most reliable **in-process event system** for Go monolithic applications! This guide will get you up and running with military-grade signal processing for **package coordination within your Go application**.
+
+## 🏗️ **Real-World Example: Monolithic E-commerce Package Coordination**
+
+This example shows how multiple packages within a single Go binary coordinate seamlessly using signals:
+
+```go
+// github.com/mycompany/myapp/events/ecommerce.go - Centralized events for all e-commerce packages
+package events
+
+import "github.com/maniartech/signals"
+
+// Order lifecycle events - shared across all packages in monolith
+var (
+    OrderCreated    = signals.New[OrderCreatedEvent]()
+    OrderPaid       = signals.New[OrderPaidEvent]()
+    OrderShipped    = signals.New[OrderShippedEvent]()
+    OrderCancelled  = signals.NewSync[OrderCancelEvent]()  // Sync for rollbacks
+
+    // Inventory events
+    StockUpdated    = signals.New[StockUpdateEvent]()
+    LowStockAlert   = signals.New[LowStockEvent]()
+
+    // User events
+    UserRegistered  = signals.New[UserRegisteredEvent]()
+    UserProfileUpdated = signals.New[UserProfileEvent]()
+)
+
+type OrderCreatedEvent struct {
+    OrderID    string      `json:"order_id"`
+    UserID     string      `json:"user_id"`
+    Items      []OrderItem `json:"items"`
+    Total      float64     `json:"total"`
+    CreatedAt  time.Time   `json:"created_at"`
+}
+
+type OrderPaidEvent struct {
+    OrderID       string    `json:"order_id"`
+    PaymentID     string    `json:"payment_id"`
+    Amount        float64   `json:"amount"`
+    PaymentMethod string    `json:"payment_method"`
+    PaidAt        time.Time `json:"paid_at"`
+}
+```
+
+```go
+// github.com/mycompany/myapp/order/service.go - Order package emits events
+package order
+
+import (
+    "context"
+    "time"
+    "github.com/mycompany/myapp/events"
+)
+
+func CreateOrder(ctx context.Context, userID string, items []OrderItem) (*Order, error) {
+    order := &Order{
+        ID:        generateID(),
+        UserID:    userID,
+        Items:     items,
+        Total:     calculateTotal(items),
+        Status:    "pending",
+        CreatedAt: time.Now(),
+    }
+
+    // Save to database first
+    if err := db.Save(order); err != nil {
+        return nil, err
+    }
+
+    // Notify other packages in same process
+    go events.OrderCreated.Emit(ctx, events.OrderCreatedEvent{
+        OrderID:   order.ID,
+        UserID:    order.UserID,
+        Items:     order.Items,
+        Total:     order.Total,
+        CreatedAt: order.CreatedAt,
+    })
+
+    return order, nil
+}
+
+func ProcessPayment(ctx context.Context, orderID, paymentID string, amount float64) error {
+    // Process payment logic...
+
+    // Notify payment success to other packages
+    events.OrderPaid.Emit(ctx, events.OrderPaidEvent{
+        OrderID:       orderID,
+        PaymentID:     paymentID,
+        Amount:        amount,
+        PaymentMethod: "credit_card",
+        PaidAt:        time.Now(),
+    })
+
+    return nil
+}
+```
+
+```go
+// github.com/mycompany/myapp/inventory/service.go - Inventory package reacts to orders
+package inventory
+
+import (
+    "context"
+    "log"
+    "github.com/mycompany/myapp/events"
+)
+
+func init() {
+    // Reserve stock when order created
+    events.OrderCreated.AddListener(func(ctx context.Context, event events.OrderCreatedEvent) {
+        for _, item := range event.Items {
+            if err := reserveStock(item.ProductID, item.Quantity); err != nil {
+                log.Error("Stock reservation failed", "product", item.ProductID, "error", err)
+                // Could emit cancellation event here
+            } else {
+                log.Info("Stock reserved", "product", item.ProductID, "qty", item.Quantity)
+            }
+        }
+    }, "inventory-reservation")
+
+    // Deduct stock when payment confirmed
+    events.OrderPaid.AddListener(func(ctx context.Context, event events.OrderPaidEvent) {
+        order := getOrder(event.OrderID)
+        for _, item := range order.Items {
+            deductStock(item.ProductID, item.Quantity)
+
+            // Check if stock is low
+            if currentStock := getStock(item.ProductID); currentStock < 10 {
+                events.LowStockAlert.Emit(ctx, events.LowStockEvent{
+                    ProductID:    item.ProductID,
+                    CurrentStock: currentStock,
+                    AlertLevel:   "low",
+                })
+            }
+        }
+    }, "inventory-deduction")
+}
+```
+
+```go
+// github.com/mycompany/myapp/email/service.go - Email package sends notifications
+package email
+
+import (
+    "context"
+    "github.com/mycompany/myapp/events"
+)
+
+func init() {
+    // Send order confirmation email
+    events.OrderCreated.AddListener(func(ctx context.Context, event events.OrderCreatedEvent) {
+        user := getUserByID(event.UserID)
+        sendOrderConfirmationEmail(user.Email, event.OrderID, event.Items, event.Total)
+    }, "email-order-confirmation")
+
+    // Send payment confirmation email
+    events.OrderPaid.AddListener(func(ctx context.Context, event events.OrderPaidEvent) {
+        order := getOrder(event.OrderID)
+        user := getUserByID(order.UserID)
+        sendPaymentConfirmationEmail(user.Email, event.OrderID, event.Amount)
+    }, "email-payment-confirmation")
+
+    // Alert about low stock
+    events.LowStockAlert.AddListener(func(ctx context.Context, event events.LowStockEvent) {
+        sendLowStockAlert("inventory@company.com", event.ProductID, event.CurrentStock)
+    }, "email-low-stock")
+}
+```
+
+```go
+// github.com/mycompany/myapp/analytics/tracker.go - Analytics package tracks everything
+package analytics
+
+import (
+    "context"
+    "github.com/mycompany/myapp/events"
+)
+
+func init() {
+    // Track order metrics
+    events.OrderCreated.AddListener(func(ctx context.Context, event events.OrderCreatedEvent) {
+        track("order_created", map[string]interface{}{
+            "order_id": event.OrderID,
+            "user_id":  event.UserID,
+            "total":    event.Total,
+            "items":    len(event.Items),
+        })
+
+        incrementCounter("orders_total")
+        recordGauge("order_value", event.Total)
+    }, "analytics-order-created")
+
+    events.OrderPaid.AddListener(func(ctx context.Context, event events.OrderPaidEvent) {
+        track("order_paid", map[string]interface{}{
+            "order_id":       event.OrderID,
+            "payment_id":     event.PaymentID,
+            "amount":         event.Amount,
+            "payment_method": event.PaymentMethod,
+        })
+
+        incrementCounter("payments_successful")
+        recordGauge("revenue", event.Amount)
+    }, "analytics-payment")
+}
+```
+
+```go
+// github.com/mycompany/myapp/audit/logger.go - Audit package logs all activities
+package audit
+
+import (
+    "context"
+    "github.com/mycompany/myapp/events"
+)
+
+func init() {
+    // Audit all order activities
+    events.OrderCreated.AddListener(func(ctx context.Context, event events.OrderCreatedEvent) {
+        auditLog("ORDER_CREATED", map[string]interface{}{
+            "actor":     "system",
+            "resource":  "order",
+            "action":    "create",
+            "order_id":  event.OrderID,
+            "user_id":   event.UserID,
+            "timestamp": event.CreatedAt,
+        })
+    }, "audit-order-created")
+
+    events.OrderPaid.AddListener(func(ctx context.Context, event events.OrderPaidEvent) {
+        auditLog("ORDER_PAID", map[string]interface{}{
+            "actor":      "payment_system",
+            "resource":   "order",
+            "action":     "payment",
+            "order_id":   event.OrderID,
+            "payment_id": event.PaymentID,
+            "amount":     event.Amount,
+            "timestamp":  event.PaidAt,
+        })
+    }, "audit-payment")
+}
+```
+
+**Key Benefits of This Monolithic Approach:**
+- 🚀 **Zero Network Latency**: All packages communicate in-process
+- 🔒 **Type Safety**: Compile-time validation of event structures
+- 🎯 **Loose Coupling**: Packages don't directly depend on each other
+- 📈 **Easy Testing**: Mock individual package listeners easily
+- 🔧 **Simple Debugging**: All code runs in same process/debugger
+- ⚡ **High Performance**: Sub-microsecond event processing (11ns/op)
+- 🛡️ **Reliability**: No network failures, connection pools, or timeouts
+
+**✅ Perfect For:**
+- Monolithic Go applications with multiple packages
+- In-process component coordination and decoupling
+- HTTP middleware chains and database transaction hooks
+- Plugin architectures within single binary
+
+**❌ Use Alternatives For:**
+- Microservices communication → Use **Kafka, RabbitMQ, NATS**
+- Cross-container events → Use **HTTP APIs, gRPC**
+- Distributed systems → Use **message brokers, event streaming**
 
 ## 📦 Installation
 
@@ -20,30 +281,128 @@ go get github.com/maniartech/signals@v1.3.0
 
 ## ⚡ Quick Start (30 seconds)
 
-### 1. **Hello World Example**
+### 1. **Monolith Package Coordination Example**
 ```go
+// main.go - Main application entry point
 package main
 
 import (
     "context"
     "fmt"
-    "github.com/maniartech/signals"
+    "time"
+    "github.com/mycompany/myapp/auth"     // Auth package (same process)
+    "github.com/mycompany/myapp/audit"    // Audit package (same process)
+    "github.com/mycompany/myapp/cache"    // Cache package (same process)
+    "github.com/mycompany/myapp/events"   // Shared events (same process)
 )
 
 func main() {
-    // Create a signal for string messages
-    signal := signals.New[string]()
+    // Initialize packages - all in same Go binary
+    auth.Initialize()
+    audit.Initialize()
+    cache.Initialize()
 
-    // Add a listener
-    signal.AddListener(func(ctx context.Context, msg string) {
-        fmt.Println("📢 Received:", msg)
-    })
+    // Simulate user login - packages coordinate via events
+    userID := "user123"
+    fmt.Printf("🔑 User %s logging in...\n", userID)
 
-    // Emit an event (async, non-blocking)
-    signal.Emit(context.Background(), "Hello, Signals! 🎯")
+    // Auth package emits login event
+    auth.LoginUser(context.Background(), userID)
 
-    fmt.Println("✅ Event sent!")
+    // Give async events time to process
+    time.Sleep(100 * time.Millisecond)
+    fmt.Println("✅ Login complete - all packages coordinated!")
 }
+```
+
+```go
+// github.com/mycompany/myapp/events/shared.go - Centralized events for all packages
+package events
+
+import "github.com/maniartech/signals"
+
+// Global signals shared across packages in same process
+var (
+    UserLoggedIn  = signals.New[UserLoginEvent]()
+    UserLoggedOut = signals.New[UserLogoutEvent]()
+)
+
+type UserLoginEvent struct {
+    UserID    string `json:"user_id"`
+    Timestamp time.Time `json:"timestamp"`
+    IP        string `json:"ip"`
+}
+```
+
+```go
+// github.com/mycompany/myapp/auth/service.go - Authentication package
+package auth
+
+import (
+    "context"
+    "fmt"
+    "time"
+    "github.com/mycompany/myapp/events"
+)
+
+func Initialize() {
+    fmt.Println("🔐 Auth package initialized")
+}
+
+func LoginUser(ctx context.Context, userID string) {
+    // Perform authentication logic
+    fmt.Printf("� Authenticating user %s\n", userID)
+
+    // Emit login event for other packages to handle
+    events.UserLoggedIn.Emit(ctx, events.UserLoginEvent{
+        UserID:    userID,
+        Timestamp: time.Now(),
+        IP:        "192.168.1.1",
+    })
+}
+```
+
+```go
+// github.com/mycompany/myapp/audit/logger.go - Audit package listens to auth events
+package audit
+
+import (
+    "context"
+    "fmt"
+    "github.com/mycompany/myapp/events"
+)
+
+func Initialize() {
+    // Listen for login events from auth package
+    events.UserLoggedIn.AddListener(func(ctx context.Context, event events.UserLoginEvent) {
+        fmt.Printf("📝 AUDIT: User %s logged in at %v\n", event.UserID, event.Timestamp)
+        // Store in audit database
+    }, "audit-logger")
+
+    fmt.Println("📝 Audit package initialized")
+}
+```
+
+```go
+// github.com/mycompany/myapp/cache/invalidator.go - Cache package reacts to auth events
+package cache
+
+import (
+    "context"
+    "fmt"
+    "github.com/mycompany/myapp/events"
+)
+
+func Initialize() {
+    // Listen for login events from auth package
+    events.UserLoggedIn.AddListener(func(ctx context.Context, event events.UserLoginEvent) {
+        fmt.Printf("🗄️ CACHE: Refreshing cache for user %s\n", event.UserID)
+        // Update user cache, invalidate old sessions, etc.
+    }, "cache-refresher")
+
+    fmt.Println("🗄️ Cache package initialized")
+}
+```
 ```
 
 **Run it:**
@@ -56,72 +415,198 @@ go run main.go
 
 ## 🎯 Core Patterns
 
-### **Pattern 1: Async Events (Fire & Forget)**
-Perfect for notifications, logging, analytics
+### **Pattern 1: Async Package Coordination**
+Perfect for cross-package notifications, logging, analytics within your monolith
 
 ```go
-// Create async signal
-notifications := signals.New[UserEvent]()
+// github.com/mycompany/myapp/events/user_events.go - Shared events across packages
+package events
 
-// Add multiple listeners
-notifications.AddListener(func(ctx context.Context, event UserEvent) {
-    log.Info("User action", "user", event.UserID, "action", event.Action)
-})
+var UserSignedUp = signals.New[UserSignupEvent]()
 
-notifications.AddListener(func(ctx context.Context, event UserEvent) {
-    analytics.Track(event.UserID, event.Action, event.Properties)
-})
-
-notifications.AddListener(func(ctx context.Context, event UserEvent) {
-    metrics.Increment("user.actions", 1, []string{"action:" + event.Action})
-})
-
-// Fire and forget - all listeners run concurrently
-go notifications.Emit(ctx, UserEvent{
-    UserID: "user123",
-    Action: "signup",
-    Properties: map[string]string{"plan": "premium"},
-})
-
-fmt.Println("🚀 User signup processing started!")
+type UserSignupEvent struct {
+    UserID     string            `json:"user_id"`
+    Email      string            `json:"email"`
+    Plan       string            `json:"plan"`
+    Timestamp  time.Time         `json:"timestamp"`
+    Metadata   map[string]string `json:"metadata"`
+}
 ```
 
-### **Pattern 2: Sync Events with Error Handling**
-Perfect for transactions, critical workflows, validation chains
+```go
+// github.com/mycompany/myapp/user/service.go - User service package
+package user
+
+import (
+    "context"
+    "time"
+    "github.com/mycompany/myapp/events"
+)
+
+func CreateUser(email, plan string) (*User, error) {
+    user := &User{ID: generateID(), Email: email, Plan: plan}
+
+    // Save user to database
+    if err := db.Save(user); err != nil {
+        return nil, err
+    }
+
+    // Notify other packages asynchronously
+    go events.UserSignedUp.Emit(context.Background(), events.UserSignupEvent{
+        UserID:    user.ID,
+        Email:     user.Email,
+        Plan:      plan,
+        Timestamp: time.Now(),
+        Metadata:  map[string]string{"source": "web"},
+    })
+
+    return user, nil
+}
+```
 
 ```go
-// Create sync signal for critical operations
-workflow := signals.NewSync[PaymentRequest]()
+// github.com/mycompany/myapp/email/service.go - Email package reacts to user events
+package email
 
-// Add error-returning listeners
-workflow.AddListenerWithErr(func(ctx context.Context, payment PaymentRequest) error {
-    if payment.Amount <= 0 {
-        return errors.New("invalid amount")
+import (
+    "context"
+    "log"
+    "github.com/mycompany/myapp/events"
+)
+
+func init() {
+    // Listen for user signups from user package
+    events.UserSignedUp.AddListener(func(ctx context.Context, event events.UserSignupEvent) {
+        sendWelcomeEmail(event.Email, event.Plan)
+        log.Info("Welcome email sent", "user", event.UserID)
+    }, "email-welcome")
+}
+```
+
+```go
+// github.com/mycompany/myapp/analytics/service.go - Analytics package tracks events
+package analytics
+
+import (
+    "context"
+    "github.com/mycompany/myapp/events"
+)
+
+func init() {
+    // Track user signups from user package
+    events.UserSignedUp.AddListener(func(ctx context.Context, event events.UserSignupEvent) {
+        trackEvent("user_signup", map[string]interface{}{
+            "user_id": event.UserID,
+            "plan":    event.Plan,
+            "source":  event.Metadata["source"],
+        })
+    }, "analytics-tracker")
+}
+
+// All packages run in the same Go process - zero network overhead!
+```
+
+### **Pattern 2: Sync Transaction Coordination**
+Perfect for multi-package transaction validation within your monolith
+
+```go
+// github.com/mycompany/myapp/events/transaction_events.go - Transaction coordination
+package events
+
+var OrderProcessing = signals.NewSync[OrderProcessingEvent]()
+
+type OrderProcessingEvent struct {
+    OrderID   string      `json:"order_id"`
+    UserID    string      `json:"user_id"`
+    Items     []OrderItem `json:"items"`
+    Total     float64     `json:"total"`
+}
+```
+
+```go
+// github.com/mycompany/myapp/order/service.go - Order service coordinates with other packages
+package order
+
+import (
+    "context"
+    "errors"
+    "log"
+    "github.com/mycompany/myapp/events"
+)
+
+func init() {
+    // Set up validation chain across packages
+    events.OrderProcessing.AddListenerWithErr(validateOrderData, "order-validation")
+    events.OrderProcessing.AddListenerWithErr(inventory.ValidateStock, "inventory-validation")
+    events.OrderProcessing.AddListenerWithErr(payment.ValidatePayment, "payment-validation")
+    events.OrderProcessing.AddListenerWithErr(shipping.ValidateAddress, "shipping-validation")
+}
+
+func ProcessOrder(ctx context.Context, orderData OrderData) error {
+    // Sequential validation across multiple packages
+    if err := events.OrderProcessing.TryEmit(ctx, events.OrderProcessingEvent{
+        OrderID: orderData.ID,
+        UserID:  orderData.UserID,
+        Items:   orderData.Items,
+        Total:   orderData.Total,
+    }); err != nil {
+        log.Error("Order validation failed", "error", err)
+        return err // Any package can fail the entire transaction
     }
-    return nil // validation passed
-})
 
-workflow.AddListenerWithErr(func(ctx context.Context, payment PaymentRequest) error {
-    return paymentGateway.Charge(payment.CardToken, payment.Amount)
-})
-
-workflow.AddListenerWithErr(func(ctx context.Context, payment PaymentRequest) error {
-    return database.RecordTransaction(payment.UserID, payment.Amount)
-})
-
-// Execute with automatic error handling
-payment := PaymentRequest{
-    UserID: "user123",
-    Amount: 99.99,
-    CardToken: "tok_visa_4242",
+    // All validations passed - proceed with order
+    return createOrderRecord(orderData)
 }
 
-if err := workflow.TryEmit(ctx, payment); err != nil {
-    log.Error("Payment failed", "error", err)
-    return // Automatic rollback - later listeners won't execute
+func validateOrderData(ctx context.Context, event events.OrderProcessingEvent) error {
+    if event.Total <= 0 {
+        return errors.New("invalid order total")
+    }
+    if len(event.Items) == 0 {
+        return errors.New("order must have items")
+    }
+    return nil
+}
+```
+
+```go
+// github.com/mycompany/myapp/inventory/validator.go - Inventory package validates stock
+package inventory
+
+import (
+    "context"
+    "fmt"
+    "github.com/mycompany/myapp/events"
+)
+
+func ValidateStock(ctx context.Context, event events.OrderProcessingEvent) error {
+    for _, item := range event.Items {
+        available := getAvailableStock(item.ProductID)
+        if available < item.Quantity {
+            return fmt.Errorf("insufficient stock for %s: need %d, have %d",
+                item.ProductID, item.Quantity, available)
+        }
+    }
+    return nil
+}
+```
+
+```go
+// github.com/mycompany/myapp/payment/validator.go - Payment package validates payment method
+package payment
+
+func ValidatePayment(ctx context.Context, event events.OrderProcessingEvent) error {
+    user := getUserPaymentInfo(event.UserID)
+    if !user.HasValidPaymentMethod() {
+        return errors.New("no valid payment method")
+    }
+    if user.GetBalance() < event.Total {
+        return errors.New("insufficient funds")
+    }
+    return nil
 }
 
-fmt.Println("💳 Payment processed successfully!")
+// All validation happens in same process - microsecond coordination!
 ```
 
 ## 🛠️ Essential Data Types
@@ -161,7 +646,7 @@ type SystemEvent struct {
 
 ### **Cross-Package Event Coordination**
 ```go
-// events/app_events.go - Central event definitions
+// github.com/mycompany/myapp/events/app_events.go - Central event definitions
 package events
 
 var (
@@ -170,7 +655,7 @@ var (
     DataChanged  = signals.New[DataChangeEvent]()
 )
 
-// auth/service.go - Authentication service
+// github.com/mycompany/myapp/auth/service.go - Authentication service
 package auth
 
 func init() {
@@ -199,7 +684,7 @@ func LoginUser(email, password string) error {
 
 ### **Database Transaction Validation**
 ```go
-// db/transaction.go - Transaction coordinator with validation
+// github.com/mycompany/myapp/db/transaction.go - Transaction coordinator with validation
 package db
 
 var TransactionValidation = signals.NewSync[TransactionEvent]()
@@ -228,7 +713,7 @@ func ExecuteTransaction(ctx context.Context, tx Transaction) error {
 
 ### **Context Cancellation & Timeouts**
 ```go
-// middleware/timeout.go - HTTP request timeout handling
+// github.com/mycompany/myapp/middleware/timeout.go - HTTP request timeout handling
 package middleware
 
 var RequestProcessing = signals.NewSync[RequestContext]()
