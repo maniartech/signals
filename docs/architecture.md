@@ -403,31 +403,31 @@ Showing nodes with >= 0.1s (10% of 1.2s total)
 
 ## 🏭 Production Architecture Patterns
 
-### **Microservices Event Bus**
+### **Monolithic Application Event Bus**
 ```go
-type EventBus struct {
-    // Domain events
+type ApplicationEventBus struct {
+    // Domain events within same process
     userEvents     signals.Signal[UserEvent]
     orderEvents    signals.Signal[OrderEvent]
     paymentEvents  signals.SyncSignal[PaymentEvent]  // Critical path
 
-    // System events
+    // System events within application
     healthChecks   signals.Signal[HealthEvent]
     metrics        signals.Signal[MetricEvent]
 
-    // Cross-cutting concerns
+    // Cross-cutting concerns within same binary
     auditLog       signals.Signal[AuditEvent]
     errorHandler   signals.Signal[ErrorEvent]
 
-    // Circuit breaker for external services
+    // Circuit breaker for external API calls
     circuitBreaker *CircuitBreakerSignal
 }
 
-func (eb *EventBus) Setup() {
-    // Wire up cross-service communication
-    eb.orderEvents.AddListener(eb.handleOrderForInventory)
-    eb.orderEvents.AddListener(eb.handleOrderForShipping)
-    eb.orderEvents.AddListener(eb.handleOrderForAnalytics)
+func (eb *ApplicationEventBus) Setup() {
+    // Wire up cross-package communication within same process
+    eb.orderEvents.AddListener(eb.handleOrderForInventory)  // inventory package
+    eb.orderEvents.AddListener(eb.handleOrderForShipping)   // shipping package
+    eb.orderEvents.AddListener(eb.handleOrderForAnalytics)  // analytics package
 
     // Critical payment processing (sync)
     eb.paymentEvents.AddListenerWithErr(eb.validatePayment)

@@ -1,8 +1,16 @@
 # 📖 Complete API Reference
 
-> **Military-grade event processing with 11ns/op performance**
+> **Military-grade in-process event processing with 11ns/op performance**
 
-Complete documentation for all methods, interfaces, and advanced usage patterns with **93.5% test coverage**.
+Complete documentation for all methods, interfaces, and advanced usage patterns for **in-process communication within Go monolithic applications** with **93.5% test coverage**.
+
+## 🎯 **Scope: In-Process Events Only**
+
+**Important**: This library is designed for **package-to-package communication within the same Go process**, not for distributed systems or microservices communication.
+
+- ✅ **Monolith Architecture**: Perfect for coordinating packages within single binary
+- ✅ **In-Process Events**: Zero network overhead, type-safe, microsecond latency
+- ❌ **Distributed Systems**: Use message brokers (Kafka, RabbitMQ) for cross-service communication
 
 ## 🎯 Core Constructors
 
