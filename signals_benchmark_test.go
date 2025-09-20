@@ -51,7 +51,8 @@ func BenchmarkSignalEmit_Concurrent(b *testing.B) {
 
 // Benchmark concurrent add/remove listeners
 func BenchmarkSignalAddRemoveListener_Concurrent(b *testing.B) {
-	signal := signals.New[int]()
+	opts := &signals.SignalOptions{InitialCapacity: 1024}
+	signal := signals.NewWithOptions[int](opts)
 	var mu sync.Mutex
 	b.ReportAllocs()
 	b.ResetTimer()
