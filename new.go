@@ -11,8 +11,9 @@ package signals
 //  })
 //  signal.Emit(context.Background(), 42)
 func NewSync[T any]() Signal[T] {
-	s := &SyncSignal[T]{}
-	s.Reset()
+	s := &SyncSignal[T]{
+		baseSignal: NewBaseSignal[T](nil),
+	}
 	return s
 }
 
@@ -27,7 +28,8 @@ func NewSync[T any]() Signal[T] {
 //  })
 //  signal.Emit(context.Background(), 42)
 func New[T any]() Signal[T] {
-	s := &AsyncSignal[T]{}
-	s.Reset() // Reset the signal
+	s := &AsyncSignal[T]{
+		baseSignal: NewBaseSignal[T](nil),
+	}
 	return s
 }

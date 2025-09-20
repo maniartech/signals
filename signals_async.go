@@ -14,7 +14,7 @@ import (
 // to wait for the listeners to finish, you can call the Emit method
 // in a separate goroutine.
 type AsyncSignal[T any] struct {
-	BaseSignal[T]
+	baseSignal     *BaseSignal[T]
 	workerPoolOnce sync.Once
 	workerPool     chan *emitTask[T]
 	poolSize       int
@@ -79,17 +79,47 @@ func (s *AsyncSignal[T]) ensureWorkerPool(size int) {
 	})
 }
 
+// AddListener adds a listener to the signal. Promoted from baseSignal.
+func (s *AsyncSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
+	return s.baseSignal.AddListener(listener, key...)
+}
+
+// AddListenerWithErr adds an error-returning listener. Promoted from baseSignal.
+func (s *AsyncSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
+	return s.baseSignal.AddListenerWithErr(listener, key...)
+}
+
+// RemoveListener removes a listener from the signal. Promoted from baseSignal.
+func (s *AsyncSignal[T]) RemoveListener(key string) int {
+	return s.baseSignal.RemoveListener(key)
+}
+
+// Reset resets the signal. Promoted from baseSignal.
+func (s *AsyncSignal[T]) Reset() {
+	s.baseSignal.Reset()
+}
+
+// Len returns the number of listeners. Promoted from baseSignal.
+func (s *AsyncSignal[T]) Len() int {
+	return s.baseSignal.Len()
+}
+
+// IsEmpty checks if the signal has any subscribers. Promoted from baseSignal.
+func (s *AsyncSignal[T]) IsEmpty() bool {
+	return s.baseSignal.IsEmpty()
+}
+
 func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
-	s.mu.RLock()
-	n := len(s.subscribers)
+	s.baseSignal.mu.RLock()
+	n := len(s.baseSignal.subscribers)
 	if n == 0 {
-		s.mu.RUnlock()
+		s.baseSignal.mu.RUnlock()
 		return
 	}
 	// Zero-allocation fast path for single listener, no key
-	if n == 1 && s.subscribers[0].key == "" {
-		listener := s.subscribers[0].listener
-		s.mu.RUnlock()
+	if n == 1 && s.baseSignal.subscribers[0].key == "" {
+		listener := s.baseSignal.subscribers[0].listener
+		s.baseSignal.mu.RUnlock()
 		if listener != nil {
 			listener(ctx, payload)
 		}
@@ -107,8 +137,8 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	} else {
 		subscribersCopy = make([]keyedListener[T], n)
 	}
-	copy(subscribersCopy, s.subscribers)
-	s.mu.RUnlock()
+	copy(subscribersCopy, s.baseSignal.subscribers)
+	s.baseSignal.mu.RUnlock()
 
 	// Initialize worker pool if not already
 	s.ensureWorkerPool(n)
