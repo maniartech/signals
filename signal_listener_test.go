@@ -9,10 +9,8 @@ import (
 
 // Test SignalListener type directly
 func TestSignalListener(t *testing.T) {
-	var listener signals.SignalListener[string]
-
 	// Create a concrete listener
-	listener = func(ctx context.Context, s string) {
+	listener := func(ctx context.Context, s string) {
 		// Test listener implementation
 	}
 
