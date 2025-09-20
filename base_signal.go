@@ -128,16 +128,17 @@ func (s *BaseSignal[T]) RemoveListener(key string) int {
 
 	if _, ok := s.subscribersMap[key]; ok {
 		delete(s.subscribersMap, key)
-
+		n := len(s.subscribers)
 		for i, sub := range s.subscribers {
 			if sub.key == key {
-				s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
+				// Swap with last and remove last (swap-remove, avoids allocation)
+				s.subscribers[i] = s.subscribers[n-1]
+				s.subscribers = s.subscribers[:n-1]
 				break
 			}
 		}
 		return len(s.subscribers)
 	}
-
 	return -1
 }
 
