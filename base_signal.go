@@ -9,6 +9,10 @@ import (
 type keyedListener[T any] struct {
 	key      string
 	listener SignalListener[T]
+
+	// listenerErr is an optional listener variant that can return an error.
+	// Used by TryEmit
+	listenerErr SignalListenerErr[T]
 }
 
 // BaseSignal provides the base implementation of the Signal interface.
@@ -27,7 +31,7 @@ type keyedListener[T any] struct {
 type BaseSignal[T any] struct {
 	mu             sync.RWMutex
 	subscribers    []keyedListener[T]
-	subscribersMap map[string]SignalListener[T]
+	subscribersMap map[string]struct{}
 	growthFunc     func(currentCap int) int
 }
 
@@ -64,7 +68,7 @@ func NewBaseSignal[T any](opts *SignalOptions) *BaseSignal[T] {
 	}
 	return &BaseSignal[T]{
 		subscribers:    make([]keyedListener[T], 0, initCap),
-		subscribersMap: make(map[string]SignalListener[T]),
+		subscribersMap: make(map[string]struct{}),
 		growthFunc:     growth,
 	}
 }
@@ -95,7 +99,7 @@ func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) i
 		if _, ok := s.subscribersMap[key[0]]; ok {
 			return -1
 		}
-		s.subscribersMap[key[0]] = listener
+		s.subscribersMap[key[0]] = struct{}{}
 		s.subscribers = append(s.subscribers, keyedListener[T]{
 			key:      key[0],
 			listener: listener,
@@ -161,7 +165,7 @@ func (s *BaseSignal[T]) Reset() {
 	defer s.mu.Unlock()
 
 	s.subscribers = make([]keyedListener[T], 0)
-	s.subscribersMap = make(map[string]SignalListener[T])
+	s.subscribersMap = make(map[string]struct{})
 }
 
 // Emit is not implemented in BaseSignal and panics if called. It should be
