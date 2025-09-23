@@ -48,7 +48,8 @@ Deep dive into the engineering excellence behind the 5.66ns/op performance. Unde
 - **Zero-allocation** critical paths for high-frequency operations
 
 ### Reliability
-- **Context-aware** error propagation with `TryEmit`
+- **Context-aware** operations with cancellation and timeouts
+- **Error propagation** with fast-failing `TryEmit` for transaction safety
 - **Transaction-safe** patterns for database operations
 - **Race-condition free** design tested under extreme concurrency
 

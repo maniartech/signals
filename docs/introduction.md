@@ -48,8 +48,8 @@ signal.Emit(ctx, UserEvent{ID: "user123", Action: "signup"})
 
 ### Military-Grade Robustness
 - **100% race-condition free** (validated with `go test -race`)
-- **Context cancellation** support for graceful shutdowns
-- **Error propagation** with transaction-safe patterns
+- **Context-aware operations** - All listeners receive context for cancellation and timeouts
+- **Error propagation** with fast-failing transaction-safe patterns (SyncSignal only)
 - **93.5% test coverage** including edge cases and stress tests
 
 ### Enterprise Architecture
@@ -107,7 +107,7 @@ if n == 1 && subscribers[0].key == "" {
 - **RWMutex optimization** for read-heavy workloads
 - **Lock-free fast paths** where possible
 - **Adversarial testing** under extreme concurrent load
-- **Context-aware cancellation** for graceful degradation
+- **Context cancellation** for graceful degradation (available in both signal types)
 
 ### **3. Type Safety First**
 - **Generic constraints** prevent runtime type errors
