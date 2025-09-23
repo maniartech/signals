@@ -7,7 +7,8 @@ The `signals` library delivers **sub-10 nanosecond performance** with **zero-all
 ## Key Features
 
 - ⚡ **Ultra-Fast Performance**: 5.66ns/op single listener emit with zero allocations
-- 🛡️ **Error-Safe Operations**: Context-aware error propagation with `TryEmit`
+- 🛡️ **Context-Aware**: All listeners receive context for cancellation and timeouts
+- 🚨 **Error-Safe Operations**: Fast-failing error propagation with `TryEmit` for transaction safety
 - 🔒 **Thread-Safe**: Race-condition free design tested under extreme concurrency
 - 🎯 **Transaction-Safe**: Perfect for database transactions and critical workflows
 - 📦 **Zero Dependencies**: Pure Go, no external dependencies
