@@ -1,10 +1,10 @@
-# 📖 Complete API Reference
+# API Reference
 
 > **Military-grade in-process event processing with 11ns/op performance**
 
 Complete documentation for all methods, interfaces, and advanced usage patterns for **in-process communication within Go monolithic applications** with **93.5% test coverage**.
 
-## 🎯 **Scope: In-Process Events Only**
+## Scope: In-Process Events Only
 
 **Important**: This library is designed for **package-to-package communication within the same Go process**, not for distributed systems or microservices communication.
 
@@ -12,7 +12,7 @@ Complete documentation for all methods, interfaces, and advanced usage patterns 
 - ✅ **In-Process Events**: Zero network overhead, type-safe, microsecond latency
 - ❌ **Distributed Systems**: Use message brokers (Kafka, RabbitMQ) for cross-service communication
 
-## 🎯 Core Constructors
+## Core Constructors
 
 ### **`signals.New[T any]() Signal[T]`**
 Creates a new **asynchronous** signal for concurrent, non-blocking event processing.
@@ -33,7 +33,7 @@ fmt.Println("Order processing started!") // Executes instantly
 
 **Performance:** `29 ns/op` with `43 bytes/alloc`
 
-### **`signals.NewSync[T any]() SyncSignal[T]`**
+### SyncSignal[T] - Synchronous Processing
 Creates a new **synchronous** signal for sequential, error-aware processing.
 
 ```go
@@ -118,7 +118,7 @@ syncSignal.AddListenerWithErr(validateUser)
 
 ---
 
-## �🔄 Signal Interface Methods
+## Signal Interface Methods
 
 All signals implement the core `Signal[T]` interface:
 
@@ -372,7 +372,7 @@ fmt.Printf("Empty: %v\n", signal.IsEmpty()) // Output: true
 
 ---
 
-## 🎖️ Advanced Usage Patterns
+## Advanced Usage Patterns
 
 ### **Context Handling**
 Proper context usage for timeouts, cancellation, and tracing:
@@ -604,7 +604,7 @@ func (lm *ListenerManager[T]) ListActiveListeners() []string {
 
 ---
 
-## 🔍 Performance Metrics & Monitoring
+## Performance Metrics & Monitoring
 
 ### **Built-in Metrics (with EnableMetrics: true)**
 
@@ -687,7 +687,7 @@ func (is *InstrumentedSignal[T]) TryEmit(ctx context.Context, data T) error {
 
 ---
 
-## ⚡ Performance Benchmarks
+## Performance Benchmarks
 
 ### **Typical Performance Numbers**
 
@@ -736,7 +736,7 @@ func BenchmarkSyncSignalTryEmit(b *testing.B) {
 
 ---
 
-## 🏭 Production Examples
+## Production Examples
 
 ### **Complete E-Commerce Event System**
 
@@ -926,7 +926,7 @@ func main() {
 
 ---
 
-## 🔄 Migration Guide: v1.2.0 → v1.3.0
+## Migration Guide: v1.2.0 → v1.3.0
 
 ### **Breaking Changes**
 
@@ -1041,7 +1041,7 @@ signal = signals.NewWithOptions[int](opts)
 
 ---
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 ### **Common Issues & Solutions**
 
@@ -1199,7 +1199,7 @@ func TestSignalEmission(t *testing.T) {
 
 ---
 
-## 🎯 API Summary
+## API Summary
 
 | **Method** | **Signal Type** | **Behavior** | **Returns** | **Use Case** |
 |------------|-----------------|--------------|-------------|--------------|
@@ -1216,7 +1216,7 @@ func TestSignalEmission(t *testing.T) {
 
 ---
 
-## 📚 Related Documentation
+## Related Documentation
 
 | **Topic** | **Link** | **Focus** |
 |-----------|----------|-----------|

@@ -1,10 +1,10 @@
-# 🚀 Getting Started with Signals
+# Getting Started with Signals
 
 > **From zero to production-ready in-process event system in 5 minutes**
 
 Welcome to the fastest, most reliable **in-process event system** for Go monolithic applications! This guide will get you up and running with military-grade signal processing for **package coordination within your Go application**.
 
-## 🏗️ **Real-World Example: Monolithic E-commerce Package Coordination**
+## Real-World Example: Monolithic E-commerce Package Coordination
 
 This example shows how multiple packages within a single Go binary coordinate seamlessly using signals:
 
@@ -246,26 +246,26 @@ func init() {
 ```
 
 **Key Benefits of This Monolithic Approach:**
-- 🚀 **Zero Network Latency**: All packages communicate in-process
-- 🔒 **Type Safety**: Compile-time validation of event structures
-- 🎯 **Loose Coupling**: Packages don't directly depend on each other
-- 📈 **Easy Testing**: Mock individual package listeners easily
-- 🔧 **Simple Debugging**: All code runs in same process/debugger
-- ⚡ **High Performance**: Sub-microsecond event processing (11ns/op)
-- 🛡️ **Reliability**: No network failures, connection pools, or timeouts
+- ▶ **Zero Network Latency**: All packages communicate in-process
+- ◆ **Type Safety**: Compile-time validation of event structures
+- ▪ **Loose Coupling**: Packages don't directly depend on each other
+- ▨ **Easy Testing**: Mock individual package listeners easily
+- ▤ **Simple Debugging**: All code runs in same process/debugger
+- ▷ **High Performance**: Sub-microsecond event processing (11ns/op)
+- ● **Reliability**: No network failures, connection pools, or timeouts
 
-**✅ Perfect For:**
+**▪ Perfect For:**
 - Monolithic Go applications with multiple packages
 - In-process component coordination and decoupling
 - HTTP middleware chains and database transaction hooks
 - Plugin architectures within single binary
 
-**❌ Use Alternatives For:**
+**▫ Use Alternatives For:**
 - Microservices communication → Use **Kafka, RabbitMQ, NATS**
 - Cross-container events → Use **HTTP APIs, gRPC**
 - Distributed systems → Use **message brokers, event streaming**
 
-## 📦 Installation
+## Installation
 
 ```bash
 # Get the latest version (v1.3.0+)
@@ -279,7 +279,7 @@ go get github.com/maniartech/signals@v1.3.0
 - **Go 1.18+** (generics support required)
 - **No external dependencies** 🎉
 
-## ⚡ Quick Start (30 seconds)
+## Quick Start (30 seconds)
 
 ### 1. **Monolith Package Coordination Example**
 ```go
@@ -409,11 +409,11 @@ func Initialize() {
 ```bash
 go run main.go
 # Output:
-# ✅ Event sent!
-# 📢 Received: Hello, Signals! 🎯
+# Event sent!
+# ▸ Received: Hello, Signals! ▷
 ```
 
-## 🎯 Core Patterns
+## Core Patterns
 
 ### **Pattern 1: Async Package Coordination**
 Perfect for cross-package notifications, logging, analytics within your monolith
@@ -609,7 +609,7 @@ func ValidatePayment(ctx context.Context, event events.OrderProcessingEvent) err
 // All validation happens in same process - microsecond coordination!
 ```
 
-## 🛠️ Essential Data Types
+## Essential Data Types
 
 Define your event structures for type safety:
 
@@ -642,7 +642,7 @@ type SystemEvent struct {
 }
 ```
 
-## 🔧 Advanced Patterns
+## Advanced Patterns
 
 ### **Cross-Package Event Coordination**
 ```go
@@ -828,9 +828,9 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-## 📊 Performance Tips
+## Performance Tips
 
-### **✅ Do's:**
+### **▪ Do's:**
 ```go
 // ✅ Use async for non-critical events
 notifications.Emit(ctx, event)
@@ -845,7 +845,7 @@ opts := &signals.SignalOptions{InitialCapacity: 100}
 signal.AddListener(handler, "module-name")
 ```
 
-### **❌ Don'ts:**
+### **▫ Don'ts:**
 ```go
 // ❌ Don't use sync signals for fire-and-forget
 workflow.Emit(ctx, notification) // Use async instead
@@ -859,7 +859,7 @@ func handleRequest() {
 }
 ```
 
-## 🧪 Testing Your Signals
+## Testing Your Signals
 
 ```go
 func TestUserSignup(t *testing.T) {
@@ -896,9 +896,9 @@ func TestErrorHandling(t *testing.T) {
 }
 ```
 
-## 🏁 Next Steps
+## Next Steps
 
-**You're ready to build production-grade event systems!** 🎉
+**You're ready to build production-grade event systems!** ▶
 
 ### **Choose your learning path:**
 
@@ -918,4 +918,4 @@ func TestErrorHandling(t *testing.T) {
 
 ---
 
-**Happy eventing! 🚀** Questions? Check our [examples](../example/) or [open an issue](https://github.com/maniartech/signals/issues).
+**Happy eventing! ▶** Questions? Check our [examples](../example/) or [open an issue](https://github.com/maniartech/signals/issues).

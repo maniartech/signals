@@ -1,30 +1,30 @@
-# 💡 Core Concepts & Design Patterns
+# Core Concepts & Design Patterns
 
 > **Master in-process event-driven architecture for monolith applications**
 
 Understanding these core concepts will unlock the full potential of the Signals library for building robust, high-performance **in-process event systems** within Go applications and monolithic architectures.
 
-## 🏗️ Architecture Scope: In-Process Communication
+## Architecture Scope: In-Process Communication
 
 **⚠️ Important Clarification**: The Signals library is designed for **in-process communication** within a single Go application, **NOT** for inter-process or distributed system communication.
 
-### **✅ Perfect For (Monolith & Single Application):**
+### **▪ Perfect For (Monolith & Single Application):**
 - **Package-to-Package Communication**: Events between different Go packages in the same application
 - **Module Coordination**: Coordinating different modules within a monolithic service
 - **Component Decoupling**: Loose coupling between application components
 - **Internal Event Processing**: HTTP middleware, database hooks, business logic coordination
 - **Monolithic Microkernel**: Plugin-style architecture within a single process
 
-### **❌ NOT Suitable For (Distributed Systems):**
+### **▫ NOT Suitable For (Distributed Systems):**
 - **Microservices Communication**: Use message brokers (RabbitMQ, Apache Kafka, NATS)
 - **Inter-Service Events**: Use HTTP APIs, gRPC, or event streaming platforms
 - **Cross-Process Communication**: Use IPC mechanisms (Unix sockets, named pipes, shared memory)
 - **Network-Based Events**: Use distributed event systems (Apache Pulsar, AWS EventBridge)
 - **Container-to-Container**: Use service mesh or message queues
 
-### **🎯 Typical Use Cases:**
+### Typical Use Cases
 ```go
-// ✅ GOOD: In-process package coordination
+// ▪ GOOD: In-process package coordination
 package main
 
 import (
@@ -48,7 +48,7 @@ func main() {
 ```
 
 ```go
-// ❌ BAD: Trying to use for distributed systems
+// ▫ BAD: Trying to use for distributed systems
 // DON'T DO THIS - signals won't work across network boundaries
 // Service A (separate process)
 events.UserLoggedIn.Emit(ctx, userEvent) // ❌ Won't reach Service B
@@ -57,7 +57,7 @@ events.UserLoggedIn.Emit(ctx, userEvent) // ❌ Won't reach Service B
 events.UserLoggedIn.AddListener(updateRecommendations) // ❌ Never receives events
 ```
 
-## 🎯 Signal Types: Sync vs Async
+## Signal Types: Sync vs Async
 
 ### **AsyncSignal - Fire & Forget Pattern**
 Perfect for notifications, logging, analytics, and non-critical events.
@@ -158,7 +158,7 @@ sequenceDiagram
     end
 ```
 
-## 🏗️ Advanced Design Patterns
+## Advanced Design Patterns
 
 > **Production-ready patterns for complex in-process communication in monolithic applications**
 
@@ -308,7 +308,7 @@ func (ea *EventAggregator) ReplayEvents(fromTime time.Time, eventTypes []string)
 4. **Error Escalation**: Automatically promote critical events to error streams
 5. **Replay Capability**: Enable event replay for debugging and recovery scenarios
 
-#### **⚡ Performance Considerations:**
+#### Performance Considerations
 - **Memory Usage**: ~50KB for 1000 events with full metadata
 - **Latency**: <100μs aggregation overhead per event
 - **Throughput**: Handles 100K+ events/second with proper buffering
@@ -542,7 +542,7 @@ func (cb *CircuitBreaker) executeWithTimeout(ctx context.Context, fn func(contex
 4. **Service-Specific Tuning**: Different services may need different thresholds
 5. **Fallback Strategies**: Provide alternative responses when circuit is open
 
-#### **⚡ Performance Impact:**
+#### Performance Impact
 - **Overhead**: <10μs per call when circuit is closed
 - **Memory**: ~1KB per circuit breaker instance
 - **Protection**: Prevents 99%+ of calls to failing services
@@ -938,14 +938,14 @@ func (saga *OrderSaga) refundPayment(ctx context.Context, data SagaData) error {
 5. **Event Monitoring**: Emit detailed events for observability
 6. **Error Classification**: Distinguish between retryable and permanent errors
 
-#### **⚡ Performance Characteristics:**
+#### Performance Characteristics
 - **Step Overhead**: ~1-5ms per step for coordination
 - **Memory Usage**: ~10KB per active saga instance
 - **Throughput**: Handles 1000+ concurrent sagas with proper persistence
 - **Recovery Time**: <1 minute to recover and resume interrupted sagas
 ```
 
-## 🎖️ Production Design Patterns
+## Production Design Patterns
 
 ### **Observability & Monitoring**
 ```go
@@ -1512,7 +1512,7 @@ func init() {
 }
 ```
 
-## 🎯 Best Practices & Guidelines
+## Best Practices & Guidelines
 
 ### **📋 Signal Selection Decision Tree**
 
@@ -1538,7 +1538,7 @@ flowchart TD
     style H fill:#fce4ec,stroke:#e91e63
 ```
 
-### **🎯 Signal Type Selection Guide**
+### Signal Type Selection Guide
 
 | **Scenario** | **Signal Type** | **Method** | **Reasoning** | **Example** |
 |--------------|-----------------|------------|---------------|-------------|
@@ -1553,7 +1553,7 @@ flowchart TD
 | **Batch Operations** | `AsyncSignal` | `Emit()` | Parallel processing beneficial | File uploads, image processing |
 | **Event Sourcing** | `SyncSignal` | `TryEmit()` | Consistency critical | Event store writes |
 
-### **🛡️ Error Handling Best Practices**
+### Error Handling Best Practices
 
 #### **1. Layered Error Handling Strategy**
 
@@ -1727,7 +1727,7 @@ func ProcessWithDeadlines(ctx context.Context, data ProcessingData) error {
 }
 ```
 
-### **⚡ Performance Optimization Patterns**
+### Performance Optimization Patterns
 
 #### **1. Signal Pre-allocation Strategy**
 
@@ -1819,7 +1819,7 @@ func (fm *FeatureManager) DisableFeature(name string) {
 }
 ```
 
-### **🔍 Monitoring and Observability**
+### Monitoring and Observability
 
 #### **1. Event Metrics Collection**
 
@@ -1901,7 +1901,7 @@ func (ets *ErrorTrackingSignal[T]) TryEmitWithTracking(ctx context.Context, data
 
 ### **🚨 Common Pitfalls and How to Avoid Them**
 
-#### **❌ Don't Do This:**
+#### Don't Do This
 
 ```go
 // ❌ Wrong: Using sync signal for fire-and-forget
@@ -1929,7 +1929,7 @@ for i := 0; i < 1000; i++ {
 }
 ```
 
-#### **✅ Do This Instead:**
+#### Do This Instead
 
 ```go
 // ✅ Right: Use async signal for fire-and-forget
@@ -1974,7 +1974,7 @@ defer func() {
 }()
 ```
 
-### **📊 Performance Guidelines**
+### Performance Guidelines
 
 #### **Capacity Planning:**
 - **< 10 listeners**: Use default capacity (11)
@@ -1999,7 +1999,7 @@ defer func() {
 
 **Scenario**: A social media monolithic application handling 100K+ requests per minute with multiple internal packages that need to coordinate user actions, content moderation, and analytics **within the same Go process**.
 
-#### **📊 Implementation Architecture**
+#### Implementation Architecture
 
 ```go
 // social-media-app/events/global.go - Centralized event coordination
@@ -2040,7 +2040,7 @@ type ModerationEvent struct {
 }
 ```
 
-#### **🎯 Commentary & Reasoning:**
+#### Commentary & Reasoning
 
 **Why AsyncSignal for User Actions?**
 - **Volume**: 50K+ actions per minute require non-blocking processing
@@ -2096,7 +2096,7 @@ func trackUserBehavior(ctx context.Context, action events.UserActionEvent) {
 }
 ```
 
-#### **🛡️ Critical Path Implementation:**
+#### Critical Path Implementation
 
 ```go
 // moderation/service.go - Synchronous content validation
@@ -2215,7 +2215,7 @@ type RiskEvent struct {
 }
 ```
 
-#### **⚡ Ultra-Low Latency Market Data Processing**
+#### Ultra-Low Latency Market Data Processing
 
 ```go
 // marketdata/processor.go - High-frequency data ingestion
@@ -2586,7 +2586,7 @@ func reserveInventory(ctx context.Context, reservation events.ReservationEvent) 
 }
 ```
 
-#### **📊 Real-Time Inventory Analytics**
+#### Real-Time Inventory Analytics
 
 ```go
 // analytics/inventory.go - Background inventory optimization
@@ -2767,4 +2767,4 @@ func (h *ExternalEventHandler) PublishToExternalSystems(ctx context.Context, eve
 }
 ```
 
-**Key Takeaway**: Use Signals for **in-process coordination** within your Go monolith, and use **message brokers/APIs** for communication **between separate services/processes**. 🎯
+**Key Takeaway**: Use Signals for **in-process coordination** within your Go monolith, and use **message brokers/APIs** for communication **between separate services/processes**. ▷

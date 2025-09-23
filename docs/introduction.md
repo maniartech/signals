@@ -1,4 +1,4 @@
-# Signals - Military-Grade Event System for Go
+# Signals: Military-Grade Event Processing for Go
 
 > **The fastest, most robust, zero-allocation event system designed for mission-critical applications**
 
@@ -7,11 +7,11 @@
 [![Performance](https://img.shields.io/badge/Performance-11ns%2Fop-green.svg)](https://github.com/maniartech/signals)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-## 🚀 What is Signals?
+## What is Signals?
 
 **Signals** is a **military-grade, high-performance Go library** for **in-process event communication** within monolithic Go applications. Built from the ground up for **extreme performance** and **rock-solid reliability**, it enables decoupled communication between **packages and components within the same process** with nanosecond-level precision.
 
-### 🎯 **Architecture Scope**
+### Architecture Scope
 - ✅ **In-Process Communication**: Perfect for monolithic Go applications
 - ✅ **Package Coordination**: Events between Go packages in same binary
 - ✅ **Component Decoupling**: Loose coupling within single application
@@ -28,7 +28,7 @@ signal.AddListener(func(ctx context.Context, user UserEvent) {
 signal.Emit(ctx, UserEvent{ID: "user123", Action: "signup"})
 ```
 
-## ⚡ Performance Benchmarks
+## Performance Benchmarks
 
 | Operation | Performance | Memory | Allocations |
 |-----------|-------------|---------|-------------|
@@ -38,7 +38,7 @@ signal.Emit(ctx, UserEvent{ID: "user123", Action: "signup"})
 
 > 🎖️ **Military-Grade**: Tested with 100 goroutines × 1000 operations under adversarial conditions
 
-## 🎯 Key Features
+## Key Features
 
 ### 🔥 **Ultra-High Performance**
 - **Sub-10 nanosecond** single listener operations
@@ -46,25 +46,25 @@ signal.Emit(ctx, UserEvent{ID: "user123", Action: "signup"})
 - **Triple sync.Pool** optimization for memory efficiency
 - **Prime-based growth** algorithm for optimal memory layout
 
-### 🛡️ **Military-Grade Robustness**
+### Military-Grade Robustness
 - **100% race-condition free** (validated with `go test -race`)
 - **Context cancellation** support for graceful shutdowns
 - **Error propagation** with transaction-safe patterns
 - **93.5% test coverage** including edge cases and stress tests
 
-### 🏗️ **Enterprise Architecture**
+### Enterprise Architecture
 - **Generic type safety** with compile-time validation
 - **Sync vs Async** separation with distinct capabilities
 - **Interface compliance** for dependency injection
 - **Backward compatibility** with semantic versioning
 
-### 🎖️ **Production Ready**
+### Production Ready
 - **Dependency-free** - Zero external dependencies
 - **Memory leak proof** - Intelligent pool management
 - **Deterministic performance** under high load
 - **Comprehensive documentation** with real-world examples
 
-## 📊 Package Communication Flow
+## Package Communication Flow
 
 ```mermaid
 sequenceDiagram
@@ -115,7 +115,7 @@ if n == 1 && subscribers[0].key == "" {
 - **Compile-time validation** of event payloads
 - **Clear API boundaries** with semantic naming
 
-## 🎯 Real-World Use Cases
+## Real-World Use Cases
 
 ### **Cross-Package Communication** �
 ```go
@@ -152,7 +152,7 @@ if err := txSignal.TryEmit(ctx, txEvent); err != nil {
 tx.Commit()
 ```
 
-### **Request Logging & Analytics** 📊
+### Request Logging & Analytics
 ```go
 // HTTP middleware emits request events
 var RequestLogged = signals.New[RequestEvent]()
@@ -186,12 +186,12 @@ DataChanged.Emit(ctx, ChangeEvent{Table: "users", RecordID: "123"})
 
 | **Section** | **Description** | **Audience** |
 |-------------|-----------------|--------------|
-| **[🚀 Getting Started](getting_started.md)** | Quick setup, basic examples, installation | **Beginners** |
+| **[▶ Getting Started](getting_started.md)** | Quick setup, basic examples, installation | **Beginners** |
 | **[💡 Core Concepts](concepts.md)** | Sync vs Async, patterns, best practices | **All Users** |
 | **[🏗️ Architecture](architecture.md)** | Internal design, performance optimizations | **Advanced** |
 | **[📖 API Reference](api_reference.md)** | Complete method documentation with examples | **Reference** |
 
-## 🎖️ Production Confidence
+## Production Confidence
 
 ### **Battle-Tested Metrics**
 - ✅ **Zero race conditions** detected across 100,000+ operations
@@ -211,4 +211,4 @@ Perfect for:
 
 ---
 
-**Ready to experience military-grade event processing?** → [**Start Here**](getting_started.md) 🚀
+**Ready to experience military-grade event processing?** → [**Start Here**](getting_started.md) ▶

@@ -1,10 +1,10 @@
-# 🏗️ Architecture & Performance Engineering
+# Architecture & Performance Engineering
 
 > **Zero-allocation, military-grade event processing architecture**
 
 Deep dive into the engineering excellence that powers **11ns/op** performance with **0 allocations** in critical paths.
 
-## 📊 Performance Metrics at a Glance
+## Performance Metrics at a Glance
 
 | **Metric** | **SyncSignal** | **AsyncSignal** | **Memory** |
 |------------|----------------|-----------------|-------------|
@@ -13,7 +13,7 @@ Deep dive into the engineering excellence that powers **11ns/op** performance wi
 | **1000 Concurrent** | `99.9% < 1ms` | `99.9% < 2ms` | `< 1KB heap` |
 | **Coverage** | **93.5%** | **93.5%** | **2000+ tests** |
 
-## 🎯 Core Architecture Overview
+## Core Architecture Overview
 
 ```mermaid
 graph TB
@@ -60,31 +60,29 @@ graph TB
     style API fill:#96ceb4,color:#fff
 ```
 
-## ⚡ The Heart of the Engine: Advanced Signaling Architecture
+## The Heart of the Engine: Advanced Signaling Architecture
 
 The real power lies in the sophisticated **signaling mechanisms**, **zero-allocation architecture**, and **military-grade engineering practices** that deliver unprecedented performance:
 
-### 🚀 **Core Innovation Pillars**
+### Core Innovation Pillars
 
-1. **🎯 Zero-Allocation Critical Path** - Sub-11ns processing with 0 heap allocations
-2. **🔒 Thread-Safe Concurrency** - RWMutex optimization for massive parallelism
-3. **🏊‍♂️ Connection Pooling** - Object reuse eliminating GC pressure
-4. **⚡ Goroutine Management** - Smart worker pools preventing resource exhaustion
-5. **🛡️ Bulletproof Error Handling** - Panic recovery with context propagation
-6. **📊 Scalable Architecture** - Handling hundreds of signals simultaneously
+1. **▷ Zero-Allocation Critical Path** - Sub-11ns processing with 0 heap allocations
+2. **◆ Thread-Safe Concurrency** - RWMutex optimization for massive parallelism
+3. **▪ Connection Pooling** - Object reuse eliminating GC pressure
+4. **▨ Goroutine Management** - Smart worker pools preventing resource exhaustion
+5. **● Bulletproof Error Handling** - Panic recovery with context propagation
+6. **▤ Scalable Architecture** - Handling hundreds of signals simultaneously
 
-
-
-### **🧠 Prime-Based Growth Algorithm: Memory Engineering Excellence**
+### Prime-Based Growth Algorithm: Memory Engineering Excellence
 Advanced memory allocation strategy using prime numbers for **optimal CPU cache utilization** and **hash collision reduction**:
 
 ```go
-// 🎯 Mathematically optimized prime sequence for memory efficiency
+// ▷ Mathematically optimized prime sequence for memory efficiency
 var primes = []int{
     7, 17, 37, 79, 163, 331, 673, 1361, 2729, 5471, 10949, 21911, 43853, 87719
 }
 
-// 🚀 Strategic prime selection prevents memory fragmentation
+    // ▶ Strategic prime selection prevents memory fragmentation
 func growListeners[T any](current []func(context.Context, T)) []func(context.Context, T) {
     currentCap := cap(current)
     newSize := currentCap * 2
@@ -103,15 +101,15 @@ func growListeners[T any](current []func(context.Context, T)) []func(context.Con
 }
 ```
 
-**🎯 Why This Engineering Approach is Revolutionary:**
+**Why This Engineering Approach is Revolutionary:**
 - ✅ **Better Hash Distribution**: Reduces clustering in internal data structures
 - ✅ **Memory Alignment**: Optimal CPU cache line utilization
 - ✅ **Growth Efficiency**: Minimizes reallocation frequency
 - ✅ **Performance Stability**: Predictable memory access patterns
 
-## 🛡️ **Advanced Error Handling & Goroutine Management**
+## Advanced Error Handling & Goroutine Management
 
-### **🚀 Sophisticated Panic Recovery System**
+### Sophisticated Panic Recovery System
 **Military-grade resilience** ensuring one failing listener never crashes the entire system:
 
 ```go
@@ -139,12 +137,12 @@ func (s *AsyncSignal[T]) safeExecute(ctx context.Context, data T, listener func(
         }
     }()
 
-    // 🎯 Execute listener in protected context
+    // ▷ Execute listener in protected context
     listener(ctx, data)
 }
 ```
 
-### **🏊‍♂️ Advanced Connection Pooling & Goroutine Management**
+### Advanced Connection Pooling & Goroutine Management
 **Smart resource management** preventing goroutine explosion:
 
 ```go
@@ -159,7 +157,7 @@ type AsyncSignal[T any] struct {
 }
 
 func (s *AsyncSignal[T]) EmitWithBackpressure(ctx context.Context, data T) error {
-    // 🎯 Intelligent backpressure handling
+    // ▷ Intelligent backpressure handling
     select {
     case s.workerLimit <- struct{}{}:
         // 🟢 Resource available - proceed
@@ -182,7 +180,7 @@ func (s *AsyncSignal[T]) EmitWithBackpressure(ctx context.Context, data T) error
 }
 ```
 
-### **📊 Real-Time Performance Monitoring**
+### Real-Time Performance Monitoring
 **Built-in observability** for production systems:
 
 ```go
@@ -209,37 +207,37 @@ func (s *AsyncSignal[T]) GetMetrics() SignalMetrics {
 
 **🏆 This is what makes Signals the most advanced event system in Go:**
 - 🛡️ **Bulletproof Resilience**: Panic isolation with zero impact
-- 🚀 **Smart Resource Management**: Prevents goroutine/memory leaks
+- ▶ **Smart Resource Management**: Prevents goroutine/memory leaks
 - 📊 **Production-Ready Observability**: Real-time performance insights
 - ⚡ **Intelligent Backpressure**: Graceful degradation under load
 - 🔒 **Thread-Safe Excellence**: Lock-free where possible, optimized where necessary
 
-### **⚡ Zero-Allocation Fast Path: The Engineering Masterpiece**
+### Zero-Allocation Fast Path: The Engineering Masterpiece
 The **crown jewel** of performance engineering - **11ns critical path with 0 heap allocations**:
 
 ```go
-// 🚀 Core emission algorithm - zero heap allocations
+// ▶ Core emission algorithm - zero heap allocations
 func emitToListeners[T any](ctx context.Context, data T, mu *sync.RWMutex, listeners []func(context.Context, T)) {
     mu.RLock()                      // 🔓 Optimized read lock (microsecond speed)
-    listenersCopy := listeners      // 🚀 Zero-alloc slice header copy
+    listenersCopy := listeners      // ▶ Zero-alloc slice header copy
     mu.RUnlock()                    // 🔒 Immediate release
 
     // 💨 CRITICAL PATH: Pure stack-based execution
     for i := 0; i < len(listenersCopy); i++ {
-        listenersCopy[i](ctx, data) // 🎯 Direct function call (no indirection)
+        listenersCopy[i](ctx, data) // ▷ Direct function call (no indirection)
     }
 }
 ```
 
-### **🏆 World-Class Zero-Allocation Engineering:**
+### World-Class Zero-Allocation Engineering
 1. **🧠 Slice Header Semantics**: Copy 24-byte header, not underlying data
 2. **📊 Index-Loop Optimization**: Eliminates `range` iterator allocations
-3. **🎯 Register-Optimized Variables**: Hot data stays in CPU registers
+3. **▷ Register-Optimized Variables**: Hot data stays in CPU registers
 4. **⚡ Pointer Elimination**: Direct value semantics prevent heap escapes
 5. **🔥 Escape Analysis Mastery**: Compiler-proven stack allocation
 6. **📈 Memory Barrier Efficiency**: Minimal synchronization overhead
 
-## 🔄 SyncSignal: Transaction-Safe Processing
+## SyncSignal: Transaction-Safe Processing
 
 Perfect for critical workflows requiring error propagation and sequential execution:
 
@@ -283,7 +281,7 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, data T) error {
 - ✅ **Sequential Execution**: Predictable ordering
 - ✅ **Transaction Safety**: All-or-nothing processing
 
-## 🚀 AsyncSignal: Concurrent Processing Engine
+## AsyncSignal: Concurrent Processing Engine
 
 Optimized for high-throughput, non-blocking event processing:
 
@@ -332,7 +330,7 @@ func (s *AsyncSignal[T]) executeTask(task *task[T]) {
 }
 ```
 
-### **🏊‍♂️ Object Pool Optimization**
+### Object Pool Optimization
 Massive performance boost through object reuse:
 
 ```go
@@ -362,7 +360,7 @@ var taskPool = sync.Pool{
 - ✅ **Memory Locality**: Hot objects stay in CPU cache
 - ✅ **Predictable Performance**: No allocation spikes
 
-### **👷‍♂️ Worker Pool Architecture**
+### Worker Pool Architecture
 Dynamic goroutine management for optimal resource utilization:
 
 ```mermaid
@@ -401,9 +399,9 @@ sequenceDiagram
     end
 ```
 
-## 🔒 Concurrency & Thread Safety
+## Concurrency & Thread Safety
 
-### **RWMutex Optimization Strategy**
+### RWMutex Optimization Strategy
 Read-optimized locking for high-frequency emit operations:
 
 ```go
@@ -432,7 +430,7 @@ func addListenerWithLocking[T any](fn func(context.Context, T), mu *sync.RWMutex
 - ✅ **Safe Iteration**: Slice copy prevents race conditions
 - ✅ **Write Protection**: Modifications are serialized
 
-### **Memory Safety Guarantees**
+### Memory Safety Guarantees
 Rock-solid guarantees in multi-threaded environments:
 
 ```go
@@ -453,9 +451,9 @@ func safeAddListener[T any](fn func(context.Context, T), mu *sync.RWMutex, liste
 }
 ```
 
-## 📊 Performance Engineering Deep Dive
+## Performance Engineering Deep Dive
 
-### **Benchmarking Results Analysis**
+### Benchmarking Results Analysis
 
 ```bash
 $ go test -bench=BenchmarkSyncSignal -benchmem -count=5
@@ -473,10 +471,10 @@ BenchmarkAsyncSignalEmit/100_listeners-8          500000  2942.1 ns/op 4300 B/op
 **Performance Analysis:**
 - 📈 **Linear Scaling**: O(n) performance with listener count
 - ⚡ **Sub-microsecond Latency**: 11ns for single listener
-- 🎯 **Zero Heap Allocations**: Critical path completely stack-based
+- ▷ **Zero Heap Allocations**: Critical path completely stack-based
 - 🔥 **99.9th Percentile**: < 1ms even with 1000 listeners
 
-### **Memory Layout Optimization**
+### Memory Layout Optimization
 
 ```go
 // ✅ Cache-friendly data layout - optimized field ordering
@@ -494,7 +492,7 @@ type OptimalSignalLayout[T any] struct {
 - ✅ **Alignment**: Natural memory alignment for all fields
 - ✅ **False Sharing Avoidance**: Proper memory padding
 
-### **CPU Profiling Insights**
+### CPU Profiling Insights
 
 ```bash
 $ go tool pprof cpu.prof
@@ -509,12 +507,12 @@ Showing nodes with >= 0.1s (10% of 1.2s total)
 ```
 
 **Profiling Insights:**
-- 🎯 **66% Time in Listeners**: Actual business logic (optimal!)
+- ▷ **66% Time in Listeners**: Actual business logic (optimal!)
 - ⚡ **16% Time in Signal**: Core emit functionality
 - 🔒 **17% Time in Locking**: RWMutex overhead (minimal)
 - ✅ **Zero GC Time**: No garbage collection pressure
 
-## 🏭 Production Architecture Patterns
+## Production Architecture Patterns
 
 ### **Monolithic Application Event Bus**
 ```go
@@ -617,7 +615,7 @@ func (es *EventStore) AppendEvent(event Event) error {
 }
 ```
 
-## 🔬 Advanced Performance Tuning
+## Advanced Performance Tuning
 
 ### **Memory Pool Tuning**
 ```go
@@ -661,7 +659,7 @@ func (cas *CPUAffinitySignal[T]) Emit(ctx context.Context, data T) {
 }
 ```
 
-## 🛡️ Security & Reliability Features
+## Security & Reliability Features
 
 ### **Panic Recovery Architecture**
 ```go
@@ -699,7 +697,7 @@ func (rls *RateLimitedSignal[T]) EmitWithLimit(ctx context.Context, data T) erro
 }
 ```
 
-## 🔍 Observability & Monitoring
+## Observability & Monitoring
 
 ### **Built-in Metrics Collection**
 ```go
@@ -724,7 +722,7 @@ func (is *InstrumentedSignal[T]) Emit(ctx context.Context, data T) {
 
 ---
 
-## 🎯 Architecture Summary
+## Architecture Summary
 
 | **Component** | **Purpose** | **Key Innovation** |
 |---------------|-------------|--------------------|
@@ -734,11 +732,11 @@ func (is *InstrumentedSignal[T]) Emit(ctx context.Context, data T) {
 | **RWMutex** | Concurrency | Read-optimized locking |
 | **Memory Pools** | Performance | 95% allocation reduction |
 
-**This architecture delivers world-class performance while maintaining simplicity and reliability.** 🚀
+**This architecture delivers world-class performance while maintaining simplicity and reliability.** ▶
 
 ---
 
-## 📚 Deep Dive Resources
+## Deep Dive Resources
 
 | **Topic** | **Link** | **Focus** |
 |-----------|----------|-----------|
