@@ -14,7 +14,7 @@ Complete documentation for all methods, interfaces, and advanced usage patterns 
 
 ## Core Constructors
 
-### **`signals.New[T any]() Signal[T]`**
+### **`signals.New[T any]() *AsyncSignal[T]`**
 Creates a new **asynchronous** signal for concurrent, non-blocking event processing.
 
 ```go
@@ -33,7 +33,7 @@ fmt.Println("Order processing started!") // Executes instantly
 
 **Performance:** `29 ns/op` with `43 bytes/alloc`
 
-### SyncSignal[T] - Synchronous Processing
+### **`signals.NewSync[T any]() *SyncSignal[T]`**
 Creates a new **synchronous** signal for sequential, error-aware processing.
 
 ```go
