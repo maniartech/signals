@@ -11,7 +11,7 @@ import (
 
 // Test SyncSignal TryEmit edge cases to improve coverage
 func TestSyncSignal_TryEmit_EdgeCases(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 
 	// Test with nil context
 	err := sig.TryEmit(nil, 1)
@@ -22,7 +22,7 @@ func TestSyncSignal_TryEmit_EdgeCases(t *testing.T) {
 
 // Test SyncSignal TryEmit with no listeners and nil context
 func TestSyncSignal_TryEmit_NoListenersNilContext(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 
 	err := sig.TryEmit(nil, 1)
 	if err != nil {
@@ -32,7 +32,7 @@ func TestSyncSignal_TryEmit_NoListenersNilContext(t *testing.T) {
 
 // Test SyncSignal TryEmit with single listener and nil context
 func TestSyncSignal_TryEmit_SingleListenerNilContext(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 	called := false
 
 	sig.AddListener(func(ctx context.Context, v int) {
@@ -51,7 +51,7 @@ func TestSyncSignal_TryEmit_SingleListenerNilContext(t *testing.T) {
 
 // Test SyncSignal TryEmit with single error listener and nil context
 func TestSyncSignal_TryEmit_SingleErrorListenerNilContext(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 
 	sig.AddListenerWithErr(func(ctx context.Context, v int) error {
 		return nil
@@ -65,7 +65,7 @@ func TestSyncSignal_TryEmit_SingleErrorListenerNilContext(t *testing.T) {
 
 // Test SyncSignal Emit with nil context (edge case)
 func TestSyncSignal_Emit_NilContext(t *testing.T) {
-	sig := signals.NewSync[string]().(*signals.SyncSignal[string])
+	sig := signals.NewSync[string]()
 	called := false
 
 	sig.AddListener(func(ctx context.Context, s string) {
@@ -81,7 +81,7 @@ func TestSyncSignal_Emit_NilContext(t *testing.T) {
 
 // Test SyncSignal Emit with multiple listeners and nil context
 func TestSyncSignal_Emit_MultipleListenersNilContext(t *testing.T) {
-	sig := signals.NewSync[bool]().(*signals.SyncSignal[bool])
+	sig := signals.NewSync[bool]()
 	called := 0
 
 	for i := 0; i < 5; i++ {
@@ -99,7 +99,7 @@ func TestSyncSignal_Emit_MultipleListenersNilContext(t *testing.T) {
 
 // Test SyncSignal TryEmit with context that becomes cancelled after listener starts
 func TestSyncSignal_TryEmit_ContextCancelledAfterStart(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -124,7 +124,7 @@ func TestSyncSignal_TryEmit_ContextCancelledAfterStart(t *testing.T) {
 
 // Test SyncSignal with mixed listener types and context cancellation
 func TestSyncSignal_MixedListeners_ContextCancel(t *testing.T) {
-	sig := signals.NewSync[string]().(*signals.SyncSignal[string])
+	sig := signals.NewSync[string]()
 	called := 0
 
 	// Add regular listener

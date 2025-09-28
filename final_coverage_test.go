@@ -12,7 +12,7 @@ import (
 
 // Test AsyncSignal Emit with error listeners that can't be invoked (covers listenerErr branch)
 func TestAsyncSignal_EmitWithErrorListenersInLoop(t *testing.T) {
-	sig := signals.New[int]().(*signals.AsyncSignal[int])
+	sig := signals.New[int]()
 
 	// Add regular listeners to ensure we hit the loop path
 	for i := 0; i < 20; i++ {
@@ -24,7 +24,7 @@ func TestAsyncSignal_EmitWithErrorListenersInLoop(t *testing.T) {
 
 // Test SyncSignal Emit with error listeners (should be ignored)
 func TestSyncSignal_EmitWithErrorListenersInLoop(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 
 	// Add regular listener
 	sig.AddListener(func(ctx context.Context, v int) {})
@@ -42,7 +42,7 @@ func TestSyncSignal_EmitWithErrorListenersInLoop(t *testing.T) {
 
 // Test SyncSignal TryEmit with nil context in various paths
 func TestSyncSignal_TryEmitNilContextPaths(t *testing.T) {
-	sig := signals.NewSync[string]().(*signals.SyncSignal[string])
+	sig := signals.NewSync[string]()
 
 	// Test empty signal with nil context
 	err := sig.TryEmit(nil, "test1")
@@ -81,7 +81,7 @@ func TestSyncSignal_TryEmitNilContextPaths(t *testing.T) {
 
 // Test SyncSignal TryEmit error listener returning error on single listener fast path
 func TestSyncSignal_TryEmitSingleErrorListenerReturnsError(t *testing.T) {
-	sig := signals.NewSync[bool]().(*signals.SyncSignal[bool])
+	sig := signals.NewSync[bool]()
 
 	sig.AddListenerWithErr(func(ctx context.Context, b bool) error {
 		return errors.New("single error")
@@ -95,7 +95,7 @@ func TestSyncSignal_TryEmitSingleErrorListenerReturnsError(t *testing.T) {
 
 // Test AsyncSignal ensureWorkerPool edge case coverage
 func TestAsyncSignal_EnsureWorkerPoolTypeCastFailure(t *testing.T) {
-	sig := signals.New[byte]().(*signals.AsyncSignal[byte])
+	sig := signals.New[byte]()
 
 	// Force worker pool initialization by adding enough listeners
 	for i := 0; i < 25; i++ {
