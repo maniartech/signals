@@ -1,5 +1,47 @@
 # Release Notes
 
+## v1.3.1: Constructor Return Types Fixed
+
+**Released**: September 2025 | **Commit**: 8820e46
+
+This patch fixes an issue in v1.3.0 where `New()` and `NewSync()` returned interface types instead of concrete types, which broke direct access to type-specific methods like `TryEmit` and `AddListenerWithErr`.
+
+### **What's Fixed**
+
+- **`signals.New[T]()` now returns `*AsyncSignal[T]`** (was `Signal[T]` interface in v1.3.0)
+- **`signals.NewSync[T]()` now returns `*SyncSignal[T]`** (was `Signal[T]` interface in v1.3.0)
+- **`AddListenerWithErr` works correctly** - no more method binding issues
+- **Direct method access** - `syncSig.TryEmit()` without type assertions
+
+### **Migration**
+
+**99% of users need no changes** - if you use the functions directly:
+```go
+sig := signals.New[int]()         // ✅ Works the same
+syncSig := signals.NewSync[int]() // ✅ Works the same
+```
+
+**If you have interface assignments**, simply remove them:
+```go
+// Before: var sig signals.Signal[int] = signals.New[int]()
+// After:
+sig := signals.New[int]() // Use concrete type directly
+```
+
+### **Benefits**
+
+- No type assertions needed for `TryEmit`
+- Better IDE autocomplete and method discovery
+- Clearer API - you know exactly what type you're getting
+- Zero performance impact
+
+### **Installation**
+```bash
+go get github.com/maniartech/signals@v1.3.1
+```
+
+---
+
 ## v1.3.0: Military-Grade Performance & Context Aware Improved Error-Handling
 
 We are excited to announce the release of Signals version 1.3.0, a significant enhancement that elevates this library to **enterprise-grade, high-performance standards**. This release introduces powerful new features, major architectural improvements, and achieves exceptional performance benchmarks that make it suitable for mission-critical applications.
