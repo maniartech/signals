@@ -11,7 +11,7 @@ import (
 
 // Test TryEmit returns ctx.Err() when context is canceled before any listener runs.
 func TestTryEmit_ContextAlreadyCanceled(t *testing.T) {
-	s := signals.NewSync[int]().(*signals.SyncSignal[int])
+	s := signals.NewSync[int]()
 	s.AddListener(func(ctx context.Context, v int) {})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -24,7 +24,7 @@ func TestTryEmit_ContextAlreadyCanceled(t *testing.T) {
 
 // Test TryEmit returns the first listener error and stops further listeners.
 func TestTryEmit_ListenerErrorStops(t *testing.T) {
-	s := signals.NewSync[int]().(*signals.SyncSignal[int])
+	s := signals.NewSync[int]()
 	called := 0
 
 	s.AddListener(func(ctx context.Context, v int) { called++ })
@@ -45,7 +45,7 @@ func TestTryEmit_ListenerErrorStops(t *testing.T) {
 
 // Test TryEmit single-listener fast path with error-returning listener.
 func TestTryEmit_SingleListenerError(t *testing.T) {
-	s := signals.NewSync[int]().(*signals.SyncSignal[int])
+	s := signals.NewSync[int]()
 	s.AddListenerWithErr(func(ctx context.Context, v int) error { return errors.New("x") })
 
 	if err := s.TryEmit(context.Background(), 1); err == nil || err.Error() != "x" {
@@ -55,7 +55,7 @@ func TestTryEmit_SingleListenerError(t *testing.T) {
 
 // Test Emit (non-error) stops invoking further listeners when ctx is canceled mid-iteration.
 func TestEmit_StopsOnCancelMidIteration(t *testing.T) {
-	s := signals.NewSync[int]().(*signals.SyncSignal[int])
+	s := signals.NewSync[int]()
 	called := 0
 
 	s.AddListener(func(ctx context.Context, v int) { called++ })
@@ -77,7 +77,7 @@ func TestEmit_StopsOnCancelMidIteration(t *testing.T) {
 
 // Test AddListenerWithErr respects keys and prevents duplicates (returns -1).
 func TestAddListenerWithErr_DuplicateKey(t *testing.T) {
-	s := signals.NewSync[int]().(*signals.SyncSignal[int])
+	s := signals.NewSync[int]()
 	k := "k1"
 	n := s.AddListenerWithErr(func(ctx context.Context, v int) error { return nil }, k)
 	if n != 1 {
@@ -91,7 +91,7 @@ func TestAddListenerWithErr_DuplicateKey(t *testing.T) {
 
 // Test TryEmit returns DeadlineExceeded when context times out before iteration completes.
 func TestTryEmit_DeadlineExceeded(t *testing.T) {
-	s := signals.NewSync[int]().(*signals.SyncSignal[int])
+	s := signals.NewSync[int]()
 	s.AddListener(func(ctx context.Context, v int) {
 		time.Sleep(20 * time.Millisecond)
 	})

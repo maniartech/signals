@@ -13,7 +13,7 @@ import (
 
 // Test AsyncSignal ensureWorkerPool with negative size (should use default)
 func TestAsyncSignal_EnsureWorkerPool_NegativeSize(t *testing.T) {
-	sig := signals.New[int]().(*signals.AsyncSignal[int])
+	sig := signals.New[int]()
 
 	// This should trigger ensureWorkerPool with default size calculation
 	// Add a listener that forces worker pool initialization
@@ -25,7 +25,7 @@ func TestAsyncSignal_EnsureWorkerPool_NegativeSize(t *testing.T) {
 func TestAsyncSignal_EmitWithListenerErrOnly(t *testing.T) {
 	// This tests AsyncSignal behavior when it has error listeners but can't invoke them
 	// Since AsyncSignal.Emit doesn't handle listenerErr, this tests that branch
-	sig := signals.New[int]().(*signals.AsyncSignal[int])
+	sig := signals.New[int]()
 
 	// Add regular listener first
 	sig.AddListener(func(ctx context.Context, v int) {})
@@ -36,7 +36,7 @@ func TestAsyncSignal_EmitWithListenerErrOnly(t *testing.T) {
 
 // Test SyncSignal AddListenerWithErr edge cases
 func TestSyncSignal_AddListenerWithErr_EdgeCases(t *testing.T) {
-	sig := signals.NewSync[string]().(*signals.SyncSignal[string])
+	sig := signals.NewSync[string]()
 
 	// Test nil listener panic
 	defer func() {
@@ -50,7 +50,7 @@ func TestSyncSignal_AddListenerWithErr_EdgeCases(t *testing.T) {
 
 // Test SyncSignal Emit with error listeners (they should be ignored by regular Emit)
 func TestSyncSignal_EmitIgnoresErrorListeners(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 	called := false
 
 	sig.AddListener(func(ctx context.Context, v int) {
@@ -71,7 +71,7 @@ func TestSyncSignal_EmitIgnoresErrorListeners(t *testing.T) {
 
 // Test SyncSignal TryEmit with mixed listener types - comprehensive coverage
 func TestSyncSignal_TryEmit_MixedListeners_ComprehensiveCoverage(t *testing.T) {
-	sig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	sig := signals.NewSync[int]()
 	callOrder := make([]string, 0)
 	var mu sync.Mutex
 

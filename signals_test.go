@@ -14,11 +14,11 @@ import (
 // TestInterfaceCompliance verifies that AsyncSignal and SyncSignal
 // implement the Signal interface correctly after hiding BaseSignal.
 func TestInterfaceCompliance(t *testing.T) {
-	// Test that New() returns a Signal[T] that works
-	var asyncSig signals.Signal[int] = signals.New[int]()
+	// Test that New() returns a concrete type that implements Signal[T] interface
+	asyncSig := signals.New[int]()
 
-	// Test that NewSync() returns a Signal[T] that works
-	var syncSig signals.Signal[int] = signals.NewSync[int]()
+	// Test that NewSync() returns a concrete type that implements Signal[T] interface
+	syncSig := signals.NewSync[int]()
 
 	// Test basic operations on both
 	testSignalInterface(t, asyncSig, "AsyncSignal")
@@ -69,7 +69,7 @@ func testSignalInterface(t *testing.T, sig signals.Signal[int], name string) {
 // TestSyncSignalSpecificMethods tests methods specific to SyncSignal
 // that are available when type-asserting to the concrete type.
 func TestSyncSignalSpecificMethods(t *testing.T) {
-	syncSig := signals.NewSync[int]().(*signals.SyncSignal[int])
+	syncSig := signals.NewSync[int]()
 
 	// Test AddListenerWithErr
 	count := syncSig.AddListenerWithErr(func(ctx context.Context, v int) error {

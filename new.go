@@ -10,7 +10,7 @@ package signals
 //      // ...
 //  })
 //  signal.Emit(context.Background(), 42)
-func NewSync[T any]() Signal[T] {
+func NewSync[T any]() *SyncSignal[T] {
 	s := &SyncSignal[T]{
 		baseSignal: NewBaseSignal[T](nil),
 	}
@@ -27,7 +27,7 @@ func NewSync[T any]() Signal[T] {
 //      // ...
 //  })
 //  signal.Emit(context.Background(), 42)
-func New[T any]() Signal[T] {
+func New[T any]() *AsyncSignal[T] {
 	s := &AsyncSignal[T]{
 		baseSignal: NewBaseSignal[T](nil),
 	}
