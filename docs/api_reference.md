@@ -54,8 +54,8 @@ if err := paymentFlow.TryEmit(ctx, payment); err != nil {
 
 **Performance:** `11 ns/op` with `0 allocs/op`
 
-### **`signals.NewWithOptions[T any](opts *SignalOptions) Signal[T]`**
-Creates a signal with custom optimization settings.
+### **`signals.NewWithOptions[T any](opts *SignalOptions) *AsyncSignal[T]`**
+Creates an asynchronous signal with custom optimization settings.
 
 ```go
 type SignalOptions struct {
@@ -78,6 +78,42 @@ highCapOpts := &signals.SignalOptions{
 }
 highCapSignal := signals.NewWithOptions[Event](highCapOpts)
 ```
+
+### **`signals.NewSyncWithOptions[T any](opts *SignalOptions) *SyncSignal[T]`**
+Creates a synchronous signal with custom optimization settings.
+
+```go
+// Sync signal with custom options for critical workflows
+opts := &signals.SignalOptions{
+    InitialCapacity: 50,       // Pre-allocate for expected validators
+    GrowthFunc: func(currentCap int) int {
+        return currentCap + 25 // Conservative growth for sync operations
+    },
+}
+validationFlow := signals.NewSyncWithOptions[ValidationEvent](opts)
+
+// High-performance transaction processing
+txOpts := &signals.SignalOptions{
+    InitialCapacity: 200,      // Expect many transaction validators
+}
+txSignal := signals.NewSyncWithOptions[TransactionEvent](txOpts)
+
+// Add error-returning listeners for validation chains
+validationFlow.AddListenerWithErr(validateInput, "input-validation")
+validationFlow.AddListenerWithErr(validateBusiness, "business-rules")
+validationFlow.AddListenerWithErr(validateSecurity, "security-check")
+
+// Execute with error propagation
+if err := validationFlow.TryEmit(ctx, validationData); err != nil {
+    return fmt.Errorf("validation failed: %w", err)
+}
+```
+
+**Key Differences from Async:**
+- **Synchronous execution**: Listeners run sequentially in calling goroutine
+- **Error propagation**: Use `TryEmit()` for error-aware workflows
+- **Transaction safety**: First error stops execution and returns immediately
+- **Performance**: `11 ns/op` with zero allocations for critical paths
 
 ---
 
