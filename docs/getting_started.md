@@ -687,7 +687,13 @@ func LoginUser(email, password string) error {
 // github.com/mycompany/myapp/db/transaction.go - Transaction coordinator with validation
 package db
 
-var TransactionValidation = signals.NewSync[TransactionEvent]()
+// Use NewSyncWithOptions for high-performance transaction validation
+var TransactionValidation = signals.NewSyncWithOptions[TransactionEvent](&signals.SignalOptions{
+    InitialCapacity: 20, // Pre-allocate for expected validators
+    GrowthFunc: func(cap int) int {
+        return cap + 10 // Conservative growth for sync operations
+    },
+})
 
 func init() {
     // Multiple packages can add transaction validators
@@ -795,26 +801,47 @@ func init() {
         InitialCapacity: 50,  // Expect ~50 middleware/handlers
     }
 
+    // Use async signals for fire-and-forget notifications
     middleware.RequestStarted = signals.NewWithOptions[RequestEvent](opts)
     middleware.RequestCompleted = signals.NewWithOptions[RequestEvent](opts)
+
+    // Use sync signals with options for critical validation workflows
+    syncOpts := &signals.SignalOptions{
+        InitialCapacity: 15,  // Expect fewer but critical validators
+        GrowthFunc: func(cap int) int {
+            return cap + 5 // Conservative growth for sync operations
+        },
+    }
+    middleware.RequestValidation = signals.NewSyncWithOptions[RequestEvent](syncOpts)
 
     // Add all middleware listeners at startup
     middleware.RequestStarted.AddListener(logger.LogRequestStart, "logger")
     middleware.RequestStarted.AddListener(metrics.RecordRequestStart, "metrics")
-    middleware.RequestStarted.AddListener(rateLimit.CheckRate, "rate-limiter")
-    middleware.RequestStarted.AddListener(auth.ValidateToken, "auth")
+
+    // Add critical validation listeners with error handling
+    middleware.RequestValidation.AddListenerWithErr(rateLimit.ValidateRate, "rate-limiter")
+    middleware.RequestValidation.AddListenerWithErr(auth.ValidateToken, "auth")
+    middleware.RequestValidation.AddListenerWithErr(permissions.CheckAccess, "permissions")
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
     start := time.Now()
 
-    // Fast async processing for non-critical middleware
-    go middleware.RequestStarted.Emit(r.Context(), RequestEvent{
+    // Critical validation - fail fast if any validator rejects
+    requestEvent := RequestEvent{
         Path:      r.URL.Path,
         Method:    r.Method,
         UserAgent: r.UserAgent(),
         IP:        getClientIP(r),
-    })
+    }
+
+    if err := middleware.RequestValidation.TryEmit(r.Context(), requestEvent); err != nil {
+        http.Error(w, "Request validation failed", http.StatusForbidden)
+        return
+    }
+
+    // Fast async processing for non-critical middleware
+    go middleware.RequestStarted.Emit(r.Context(), requestEvent)
 
     // Handle actual request
     processRequest(w, r)
@@ -838,8 +865,9 @@ notifications.Emit(ctx, event)
 // ✅ Use sync for critical workflows
 if err := workflow.TryEmit(ctx, event); err != nil { /* handle */ }
 
-// ✅ Pre-allocate for high throughput
+// ✅ Use NewSyncWithOptions for high-throughput sync operations
 opts := &signals.SignalOptions{InitialCapacity: 100}
+criticalFlow := signals.NewSyncWithOptions[Event](opts)
 
 // ✅ Use keyed listeners for dynamic management
 signal.AddListener(handler, "module-name")
