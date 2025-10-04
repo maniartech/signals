@@ -1735,7 +1735,7 @@ func ProcessWithDeadlines(ctx context.Context, data ProcessingData) error {
 // ✅ Pre-allocate based on expected listener count
 func NewOptimizedEventSystem() *EventSystem {
     return &EventSystem{
-        // High-frequency events - pre-allocate generously
+        // High-frequency async events - pre-allocate generously
         RequestEvents: signals.NewWithOptions[RequestEvent](&signals.SignalOptions{
             InitialCapacity: 50,  // Many middleware listeners expected
         }),
@@ -1743,15 +1743,52 @@ func NewOptimizedEventSystem() *EventSystem {
         // Low-frequency events - use defaults
         UserEvents: signals.New[UserEvent](),
 
-        // Critical events - optimize for performance
-        SecurityEvents: signals.NewWithOptions[SecurityEvent](&signals.SignalOptions{
+        // Critical sync workflows - optimize for validation chains
+        OrderValidation: signals.NewSyncWithOptions[OrderEvent](&signals.SignalOptions{
+            InitialCapacity: 15,  // Expected validator count
+            GrowthFunc: func(cap int) int {
+                return cap + 5  // Conservative growth for sync operations
+            },
+        }),
+
+        // High-throughput security validation - sync with custom options
+        SecurityValidation: signals.NewSyncWithOptions[SecurityEvent](&signals.SignalOptions{
+            InitialCapacity: 25,  // Multiple security validators
+            GrowthFunc: func(cap int) int {
+                return cap + 10 // Moderate growth for security checks
+            },
+        }),
+
+        // Fire-and-forget security events - async for performance
+        SecurityNotifications: signals.NewWithOptions[SecurityEvent](&signals.SignalOptions{
             InitialCapacity: 20,
             GrowthFunc: func(cap int) int {
-                return cap * 2  // Aggressive growth for critical events
+                return cap * 2  // Aggressive growth for notifications
             },
         }),
     }
 }
+```
+
+**Signal Type Selection Guide:**
+```go
+// ✅ Use NewSyncWithOptions for high-performance validation chains
+validationFlow := signals.NewSyncWithOptions[ValidationData](&signals.SignalOptions{
+    InitialCapacity: 20,  // Pre-allocate for expected validators
+})
+validationFlow.AddListenerWithErr(validator1, "step1")
+validationFlow.AddListenerWithErr(validator2, "step2")
+
+// ✅ Use NewWithOptions for high-volume async notifications
+notifications := signals.NewWithOptions[NotificationEvent](&signals.SignalOptions{
+    InitialCapacity: 100, // Many notification channels
+})
+notifications.AddListener(emailService)
+notifications.AddListener(smsService)
+notifications.AddListener(pushService)
+
+// ✅ Use defaults for low-frequency events
+rareEvents := signals.New[RareEvent]()
 ```
 
 #### **2. Context Reuse Patterns**
