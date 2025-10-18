@@ -5,20 +5,41 @@ import (
 	"sync"
 )
 
-// SyncSignal is a struct that implements the Signal interface.
-// It provides a synchronous way of notifying all subscribers of a signal.
-// The type parameter `T` is a placeholder for any type.
+// SyncSignal implements synchronous signal emission, invoking all listeners
+// sequentially in the same goroutine. This ensures predictable execution order
+// and allows listeners to block the emission process.
+//
+// The type parameter T specifies the payload type that will be passed to listeners.
+//
+// SyncSignal is ideal for scenarios requiring:
+//   - Guaranteed execution order
+//   - Completion guarantees before Emit() returns
+//   - Minimal goroutine overhead
+//   - Sequential processing of events
 type SyncSignal[T any] struct {
+	// baseSignal handles listener management and storage
 	baseSignal *BaseSignal[T]
 }
 
+// syncSubscribersPool reduces memory allocations during signal emission by reusing
+// subscriber slice buffers. This optimization is particularly beneficial for signals
+// that are emitted frequently with many subscribers.
 var syncSubscribersPool = sync.Pool{
 	New: func() any { return make([]keyedListener[any], 0, 16) },
 }
 
-// AddListenerErr adds an error-returning listener. It behaves like AddListener
-// but the listener may return an error. If a key is provided and already
-// exists, it returns -1.
+// AddListenerWithErr registers an error-returning listener that can report processing failures.
+// These listeners are particularly useful with TryEmit(), which can detect and return errors.
+//
+// Parameters:
+//   - listener: The error-returning callback function (must not be nil, will panic otherwise)
+//   - key: Optional unique identifier for the listener
+//
+// Returns:
+//   - The total number of subscribers after adding the listener
+//   - Returns -1 if a keyed listener with the same key already exists
+//
+// Note: When both listener and listenerErr are set, listenerErr takes precedence during TryEmit().
 func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -45,38 +66,51 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 	return len(s.subscribers)
 }
 
-// AddListener adds a listener to the signal. Promoted from baseSignal.
+// AddListener registers a new listener. See BaseSignal.AddListener for details.
 func (s *SyncSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
 	return s.baseSignal.AddListener(listener, key...)
 }
 
-// AddListenerWithErr adds an error-returning listener. Promoted from baseSignal.
+// AddListenerWithErr registers an error-returning listener. See BaseSignal.AddListenerWithErr for details.
 func (s *SyncSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
 	return s.baseSignal.AddListenerWithErr(listener, key...)
 }
 
-// RemoveListener removes a listener from the signal. Promoted from baseSignal.
+// RemoveListener removes a keyed listener. See BaseSignal.RemoveListener for details.
 func (s *SyncSignal[T]) RemoveListener(key string) int {
 	return s.baseSignal.RemoveListener(key)
 }
 
-// Reset resets the signal. Promoted from baseSignal.
+// Reset removes all subscribers. See BaseSignal.Reset for details.
 func (s *SyncSignal[T]) Reset() {
 	s.baseSignal.Reset()
 }
 
-// Len returns the number of listeners. Promoted from baseSignal.
+// Len returns the current number of subscribers. See BaseSignal.Len for details.
 func (s *SyncSignal[T]) Len() int {
 	return s.baseSignal.Len()
 }
 
-// IsEmpty checks if the signal has any subscribers. Promoted from baseSignal.
+// IsEmpty returns true if there are no subscribers. See BaseSignal.IsEmpty for details.
 func (s *SyncSignal[T]) IsEmpty() bool {
 	return s.baseSignal.IsEmpty()
 }
 
-// Emit notifies all subscribers of the signal and passes the payload in a
-// synchronous way.
+// Emit synchronously invokes all registered listeners with the given payload.
+// Listeners are called sequentially in the order they were registered (though order
+// may change after removals due to swap-remove optimization).
+//
+// The method blocks until all listeners have completed execution. If the provided
+// context is cancelled or times out, remaining listeners will not be invoked.
+//
+// Performance optimizations:
+//   - Early return if no subscribers or context is already cancelled
+//   - Zero-allocation fast path for single anonymous listeners
+//   - Pooled buffer reuse to minimize allocations for multiple listeners
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout. Checked before each listener invocation.
+//   - payload: Data to pass to all listeners
 func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 	// If context already canceled, bail out early
 	if ctx != nil && ctx.Err() != nil {
@@ -135,10 +169,33 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 	syncSubscribersPool.Put(subscribersCopy[:0])
 }
 
-// TryEmit behaves like Emit but returns an error when the provided context is
-// canceled or when any error-returning listener returns a non-nil error. It
-// stops invoking further listeners as soon as an error or cancellation is
-// observed. If no error occurs, it returns nil.
+// TryEmit synchronously invokes all registered listeners and returns any errors encountered.
+// This method is similar to Emit but provides error handling and propagation capabilities.
+//
+// Behavior:
+//   - Invokes listeners sequentially in registration order
+//   - Stops immediately if context is cancelled or any error-returning listener fails
+//   - Returns the first error encountered (context error or listener error)
+//   - Returns nil if all listeners complete successfully
+//
+// Error priority:
+//  1. Context errors (cancellation/timeout) are checked before invoking each listener
+//  2. Listener errors from SignalListenerErr callbacks are returned immediately
+//  3. Standard SignalListener callbacks cannot return errors
+//
+// Use TryEmit when you need to:
+//   - Detect and handle listener failures
+//   - Stop emission on first error
+//   - Implement transactional event handling
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout. Checked before each listener invocation.
+//   - payload: Data to pass to all listeners
+//
+// Returns:
+//   - nil if all listeners complete successfully
+//   - context.Err() if the context is cancelled or times out
+//   - The first non-nil error returned by any SignalListenerErr
 func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 	// If context already canceled, bail out early with error
 	if ctx != nil {
