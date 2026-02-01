@@ -1,22 +1,20 @@
 # Signals
 
-**High-Performance, Production-Ready Event System for Go**
+**Lightweight, Context-Aware Event System for Go**
 
-The `signals` library delivers **sub-10 nanosecond performance** with **zero-allocation** critical paths, making it perfect for mission-critical applications like high-frequency trading, real-time control systems, and embedded applications.
+`signals` provides typed, thread-safe event dispatch with two variants:
+fire-and-forget async signals and error-aware sync signals. It favors
+simple APIs, context propagation, and predictable concurrency behavior.
 
 ## Key Features
 
-- ⚡ **Ultra-Fast Performance**: 5.66ns/op single listener emit with zero allocations
+- 🧭 **Two Signal Types**: Async for fire-and-forget, Sync for error-aware workflows
 - 🛡️ **Context-Aware**: All listeners receive context for cancellation and timeouts
-- 🚨 **Error-Safe Operations**: Fast-failing error propagation with `TryEmit` for transaction safety
-- 🔒 **Thread-Safe**: Race-condition free design tested under extreme concurrency
-- 🎯 **Transaction-Safe**: Perfect for database transactions and critical workflows
+- 🚨 **Error-Safe Operations**: `TryEmit` stops on the first error or canceled context
+- 🔒 **Thread-Safe**: Safe for concurrent Add/Remove/Emit
+- 🧰 **Zero-Value Usable**: Zero-value signals can be used without explicit initialization
 - 📦 **Zero Dependencies**: Pure Go, no external dependencies
 - 🚀 **Async & Sync**: Both fire-and-forget and error-handling patterns
-
-💯 **93.5% test coverage** 💯 | **Enterprise-grade reliability**
-
-✅ **Production-Ready**: Used by [ManiarTech®️](https://maniartech.com) and other companies in mission-critical applications.
 
 [![GoReportCard example](https://goreportcard.com/badge/github.com/nanomsg/mangos)](https://goreportcard.com/report/github.com/maniartech/signals)
 [![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
@@ -139,9 +137,8 @@ func main() {
 var PriceUpdated = signals.New[PriceUpdate]()
 var SystemAlert = signals.NewSync[Alert]()
 
-// Zero-allocation performance for critical paths
+// Process high-frequency updates
 PriceUpdated.AddListener(func(ctx context.Context, update PriceUpdate) {
-    // Process price update with sub-10ns latency
     handlePriceChange(update)
 })
 
@@ -155,37 +152,23 @@ if err := SystemAlert.TryEmit(ctx, criticalAlert); err != nil {
 ```
 
 
-## Performance Benchmarks
+## Performance & Benchmarks
 
-### **Zero-Allocation Critical Paths**
+Benchmarks are included in the repo so you can measure on your own
+hardware and Go version:
 
-| Benchmark | Iterations | Time/Op | Memory/Op | Allocs/Op | Performance Rating |
-|-----------|------------|---------|-----------|-----------|-------------------|
-| **Single Listener** | 196,613,109 | **5.66ns** | **0 B** | **0 allocs** | ⚡ **Sub-10ns** |
-| **Concurrent Emit** | 41,751,328 | **28.55ns** | **0 B** | **0 allocs** | 🚀 **Race-free** |
-| **100 Listeners** | 34,066 | 35.87μs | 42 B | 2 allocs | 🎯 **Optimized** |
-
-### **Why These Numbers Matter**
-
-- **5.66ns Single Listener**: Faster than most function calls - suitable for **high-frequency trading**
-- **Zero Allocations**: No GC pressure in critical paths - perfect for **real-time control systems**
-- **28.55ns Concurrent**: Extreme thread safety without performance compromise
-- **Stress-Tested**: 100 goroutines × 1000 operations under adversarial conditions
-
-### **Real-World Performance**
-
-```go
-// This emits 1 million events in ~5.66ms
-for i := 0; i < 1_000_000; i++ {
-    signal.Emit(ctx, data) // 5.66ns per emit
-}
-
-// Perfect for:
-// ✅ High-frequency trading (microsecond latency requirements)
-// ✅ Real-time control systems (deterministic timing)
-// ✅ Embedded applications (memory-constrained environments)
-// ✅ Mission-critical workflows (zero-failure tolerance)
+```bash
+go test -bench . -benchmem
 ```
+
+Notes:
+
+- **AsyncSignal** spawns a goroutine per listener; expect allocations
+  and scheduling overhead per emit.
+- **SyncSignal** is designed to be low-allocation in steady state after
+  listeners are registered.
+- Results will vary by CPU, Go version, and runtime settings; treat
+  numbers as guidance, not guarantees.
 
 ## API Reference
 
@@ -200,11 +183,8 @@ UserLoggedIn.AddListener(func(ctx context.Context, user User) {
     // Handle event (no error return)
 }, "optional-key")
 
-// Emit (waits for all listeners to complete)
+// Emit (schedules listeners and returns immediately)
 UserLoggedIn.Emit(ctx, user)
-
-// Non-blocking emit
-go UserLoggedIn.Emit(ctx, user)
 
 // Remove listener
 UserLoggedIn.RemoveListener("optional-key")

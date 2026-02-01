@@ -12,36 +12,39 @@ import (
 // Test SyncSignal TryEmit edge cases to improve coverage
 func TestSyncSignal_TryEmit_EdgeCases(t *testing.T) {
 	sig := signals.NewSync[int]()
+	ctx := context.TODO()
 
-	// Test with nil context
-	err := sig.TryEmit(nil, 1)
+	// Test with context
+	err := sig.TryEmit(ctx, 1)
 	if err != nil {
-		t.Errorf("Expected no error with nil context, got %v", err)
+		t.Errorf("Expected no error with context, got %v", err)
 	}
 }
 
-// Test SyncSignal TryEmit with no listeners and nil context
-func TestSyncSignal_TryEmit_NoListenersNilContext(t *testing.T) {
+// Test SyncSignal TryEmit with no listeners and context
+func TestSyncSignal_TryEmit_NoListenersContext(t *testing.T) {
 	sig := signals.NewSync[int]()
+	ctx := context.TODO()
 
-	err := sig.TryEmit(nil, 1)
+	err := sig.TryEmit(ctx, 1)
 	if err != nil {
-		t.Errorf("Expected no error with no listeners and nil context, got %v", err)
+		t.Errorf("Expected no error with no listeners and context, got %v", err)
 	}
 }
 
-// Test SyncSignal TryEmit with single listener and nil context
-func TestSyncSignal_TryEmit_SingleListenerNilContext(t *testing.T) {
+// Test SyncSignal TryEmit with single listener and context
+func TestSyncSignal_TryEmit_SingleListenerContext(t *testing.T) {
 	sig := signals.NewSync[int]()
 	called := false
+	ctx := context.TODO()
 
 	sig.AddListener(func(ctx context.Context, v int) {
 		called = true
 	})
 
-	err := sig.TryEmit(nil, 42)
+	err := sig.TryEmit(ctx, 42)
 	if err != nil {
-		t.Errorf("Expected no error with single listener and nil context, got %v", err)
+		t.Errorf("Expected no error with single listener and context, got %v", err)
 	}
 
 	if !called {
@@ -49,40 +52,43 @@ func TestSyncSignal_TryEmit_SingleListenerNilContext(t *testing.T) {
 	}
 }
 
-// Test SyncSignal TryEmit with single error listener and nil context
-func TestSyncSignal_TryEmit_SingleErrorListenerNilContext(t *testing.T) {
+// Test SyncSignal TryEmit with single error listener and context
+func TestSyncSignal_TryEmit_SingleErrorListenerContext(t *testing.T) {
 	sig := signals.NewSync[int]()
+	ctx := context.TODO()
 
 	sig.AddListenerWithErr(func(ctx context.Context, v int) error {
 		return nil
 	})
 
-	err := sig.TryEmit(nil, 42)
+	err := sig.TryEmit(ctx, 42)
 	if err != nil {
-		t.Errorf("Expected no error with single error listener and nil context, got %v", err)
+		t.Errorf("Expected no error with single error listener and context, got %v", err)
 	}
 }
 
-// Test SyncSignal Emit with nil context (edge case)
-func TestSyncSignal_Emit_NilContext(t *testing.T) {
+// Test SyncSignal Emit with context (edge case)
+func TestSyncSignal_Emit_Context(t *testing.T) {
 	sig := signals.NewSync[string]()
 	called := false
+	ctx := context.TODO()
 
 	sig.AddListener(func(ctx context.Context, s string) {
 		called = true
 	})
 
-	sig.Emit(nil, "test")
+	sig.Emit(ctx, "test")
 
 	if !called {
-		t.Error("Expected listener to be called with nil context")
+		t.Error("Expected listener to be called with context")
 	}
 }
 
-// Test SyncSignal Emit with multiple listeners and nil context
-func TestSyncSignal_Emit_MultipleListenersNilContext(t *testing.T) {
+// Test SyncSignal Emit with multiple listeners and context
+func TestSyncSignal_Emit_MultipleListenersContext(t *testing.T) {
 	sig := signals.NewSync[bool]()
 	called := 0
+	ctx := context.TODO()
 
 	for i := 0; i < 5; i++ {
 		sig.AddListener(func(ctx context.Context, b bool) {
@@ -90,7 +96,7 @@ func TestSyncSignal_Emit_MultipleListenersNilContext(t *testing.T) {
 		})
 	}
 
-	sig.Emit(nil, true)
+	sig.Emit(ctx, true)
 
 	if called != 5 {
 		t.Errorf("Expected 5 listeners called, got %d", called)

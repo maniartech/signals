@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,14 +109,11 @@ func TestSignal_ConcurrentStress(t *testing.T) {
 
 	signal := signals.New[int]()
 	var wg sync.WaitGroup
-	var mu sync.Mutex
-	results := make(map[int]int)
+	var count int64
 
 	// Listener that records payloads
 	signal.AddListener(func(ctx context.Context, v int) {
-		mu.Lock()
-		results[v]++
-		mu.Unlock()
+		atomic.AddInt64(&count, 1)
 	})
 
 	// Start goroutines that add/remove listeners and emit signals
@@ -138,8 +136,14 @@ func TestSignal_ConcurrentStress(t *testing.T) {
 
 	wg.Wait()
 
+	expected := int64(goroutines * iterations)
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadInt64(&count) < expected && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	// Check for data races and panics (run with -race)
-	if len(results) == 0 {
+	if atomic.LoadInt64(&count) == 0 {
 		t.Error("No signals were received")
 	}
 }
@@ -221,9 +225,11 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 	var count int
 	var timeoutCount int
 	var mu sync.Mutex
+	var wg sync.WaitGroup
 
 	testSignal := signals.New[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
+		defer wg.Done()
 		time.Sleep(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
@@ -237,6 +243,7 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 		}
 	})
 	testSignal.AddListener(func(ctx context.Context, v int) {
+		defer wg.Done()
 		time.Sleep(500 * time.Millisecond)
 		select {
 		case <-ctx.Done():
@@ -250,6 +257,7 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 		}
 	})
 
+	wg.Add(6)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	testSignal.Emit(ctx, 1)
@@ -261,6 +269,8 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 	defer cancel3()
 	testSignal.Emit(ctx3, 3)
+
+	wg.Wait()
 
 	mu.Lock()
 	c := count
