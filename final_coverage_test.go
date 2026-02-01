@@ -40,42 +40,43 @@ func TestSyncSignal_EmitWithErrorListenersInLoop(t *testing.T) {
 	sig.Emit(context.Background(), 1)
 }
 
-// Test SyncSignal TryEmit with nil context in various paths
-func TestSyncSignal_TryEmitNilContextPaths(t *testing.T) {
+// Test SyncSignal TryEmit with context in various paths
+func TestSyncSignal_TryEmitContextPaths(t *testing.T) {
 	sig := signals.NewSync[string]()
+	ctx := context.TODO()
 
-	// Test empty signal with nil context
-	err := sig.TryEmit(nil, "test1")
+	// Test empty signal with context
+	err := sig.TryEmit(ctx, "test1")
 	if err != nil {
-		t.Errorf("Expected nil error with empty signal and nil context, got %v", err)
+		t.Errorf("Expected nil error with empty signal and context, got %v", err)
 	}
 
-	// Add error listener and test single listener path with nil context
+	// Add error listener and test single listener path with context
 	sig.AddListenerWithErr(func(ctx context.Context, s string) error {
 		return nil
 	})
 
-	err = sig.TryEmit(nil, "test2")
+	err = sig.TryEmit(ctx, "test2")
 	if err != nil {
-		t.Errorf("Expected nil error with single error listener and nil context, got %v", err)
+		t.Errorf("Expected nil error with single error listener and context, got %v", err)
 	}
 
 	sig.Reset()
 
-	// Test single regular listener with nil context
+	// Test single regular listener with context
 	sig.AddListener(func(ctx context.Context, s string) {})
-	sig.TryEmit(nil, "test3")
+	sig.TryEmit(ctx, "test3")
 
 	sig.Reset()
 
-	// Test multiple listeners with nil context
+	// Test multiple listeners with context
 	sig.AddListener(func(ctx context.Context, s string) {})
 	sig.AddListenerWithErr(func(ctx context.Context, s string) error { return nil })
 	sig.AddListener(func(ctx context.Context, s string) {})
 
-	err = sig.TryEmit(nil, "test4")
+	err = sig.TryEmit(ctx, "test4")
 	if err != nil {
-		t.Errorf("Expected nil error with multiple listeners and nil context, got %v", err)
+		t.Errorf("Expected nil error with multiple listeners and context, got %v", err)
 	}
 }
 
