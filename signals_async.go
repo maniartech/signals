@@ -58,21 +58,24 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
-	
+
 	s.baseSignal.mu.RLock()
 	subscribers := s.baseSignal.subscribers
 	if len(subscribers) == 0 {
 		s.baseSignal.mu.RUnlock()
 		return
 	}
+	snapshot := make([]keyedListener[T], len(subscribers))
+	copy(snapshot, subscribers)
+	s.baseSignal.mu.RUnlock()
 
-	for i := range subscribers {
+	for i := range snapshot {
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				break
 			}
 		}
-		sub := &subscribers[i]
+		sub := &snapshot[i]
 		if sub.listener != nil {
 			listener := sub.listener
 			go func() {
@@ -81,17 +84,6 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 				}()
 				listener(ctx, payload)
 			}()
-			continue
-		}
-		if sub.listenerErr != nil {
-			listenerErr := sub.listenerErr
-			go func() {
-				defer func() {
-					_ = recover()
-				}()
-				_ = listenerErr(ctx, payload)
-			}()
 		}
 	}
-	s.baseSignal.mu.RUnlock()
 }

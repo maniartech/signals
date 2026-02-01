@@ -114,11 +114,6 @@ func (s *SyncSignal[T]) IsEmpty() bool {
 // The method blocks until all listeners have completed execution. If the provided
 // context is cancelled or times out, remaining listeners will not be invoked.
 //
-// Performance optimizations:
-//   - Early return if no subscribers or context is already cancelled
-//   - Zero-allocation fast path for single anonymous listeners
-//   - Pooled buffer reuse to minimize allocations for multiple listeners
-//
 // Parameters:
 //   - ctx: Context for cancellation and timeout. Checked before each listener invocation.
 //   - payload: Data to pass to all listeners
@@ -134,14 +129,25 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 		s.baseSignal.mu.RUnlock()
 		return
 	}
-	for i := range subscribers {
+	var local [4]keyedListener[T]
+	var snapshot []keyedListener[T]
+	if len(subscribers) <= len(local) {
+		snapshot = local[:len(subscribers)]
+		copy(snapshot, subscribers)
+		s.baseSignal.mu.RUnlock()
+	} else {
+		snapshot = make([]keyedListener[T], len(subscribers))
+		copy(snapshot, subscribers)
+		s.baseSignal.mu.RUnlock()
+	}
+	for i := range snapshot {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				break
 			}
 		}
-		sub := &subscribers[i]
+		sub := &snapshot[i]
 		if sub.listenerErr != nil {
 			_ = sub.listenerErr(ctx, payload)
 			continue
@@ -150,7 +156,6 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 			sub.listener(ctx, payload)
 		}
 	}
-	s.baseSignal.mu.RUnlock()
 }
 
 // TryEmit synchronously invokes all registered listeners and returns any errors encountered.
@@ -198,18 +203,27 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 		}
 		return nil
 	}
-	for i := range subscribers {
+	var local [4]keyedListener[T]
+	var snapshot []keyedListener[T]
+	if len(subscribers) <= len(local) {
+		snapshot = local[:len(subscribers)]
+		copy(snapshot, subscribers)
+		s.baseSignal.mu.RUnlock()
+	} else {
+		snapshot = make([]keyedListener[T], len(subscribers))
+		copy(snapshot, subscribers)
+		s.baseSignal.mu.RUnlock()
+	}
+	for i := range snapshot {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
-				s.baseSignal.mu.RUnlock()
 				return err
 			}
 		}
-		sub := &subscribers[i]
+		sub := &snapshot[i]
 		if sub.listenerErr != nil {
 			if err := sub.listenerErr(ctx, payload); err != nil {
-				s.baseSignal.mu.RUnlock()
 				return err
 			}
 			continue
@@ -218,8 +232,6 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 			sub.listener(ctx, payload)
 		}
 	}
-
-	s.baseSignal.mu.RUnlock()
 	if ctx != nil {
 		return ctx.Err()
 	}
