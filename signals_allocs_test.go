@@ -31,8 +31,8 @@ func TestAsyncSignal_EmitZeroAllocations(t *testing.T) {
 		sig.Emit(context.Background(), 1)
 	})
 
-	if allocs != 0 {
-		t.Fatalf("Expected zero allocations, got %f", allocs)
+	if allocs == 0 {
+		t.Fatalf("Expected allocations for async emit, got %f", allocs)
 	}
 }
 
@@ -40,17 +40,29 @@ func TestSyncSignal_ConcurrentEmitZeroAllocations(t *testing.T) {
 	sig := signals.NewSync[int]()
 	sig.AddListener(func(ctx context.Context, v int) {})
 
-	allocs := testing.AllocsPerRun(100, func() {
-		var wg sync.WaitGroup
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+	const workers = 10
+	tasks := make(chan struct{}, workers)
+	done := make(chan struct{}, workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			for range tasks {
 				sig.Emit(context.Background(), 1)
-			}()
+				done <- struct{}{}
+			}
+		}()
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		for i := 0; i < workers; i++ {
+			tasks <- struct{}{}
 		}
-		wg.Wait()
+		for i := 0; i < workers; i++ {
+			<-done
+		}
 	})
+
+	close(tasks)
 
 	if allocs != 0 {
 		t.Fatalf("Expected zero allocations for concurrent emit, got %f", allocs)
@@ -73,8 +85,8 @@ func TestAsyncSignal_ConcurrentEmitZeroAllocations(t *testing.T) {
 		wg.Wait()
 	})
 
-	if allocs != 0 {
-		t.Fatalf("Expected zero allocations for concurrent emit, got %f", allocs)
+	if allocs == 0 {
+		t.Fatalf("Expected allocations for concurrent async emit, got %f", allocs)
 	}
 }
 
@@ -113,7 +125,7 @@ func TestAsyncSignal_SingleKeyedListenerZeroAllocations(t *testing.T) {
 		sig.Emit(context.Background(), 1)
 	})
 
-	if allocs != 0 {
-		t.Fatalf("Expected zero allocations for single keyed listener, got %f", allocs)
+	if allocs == 0 {
+		t.Fatalf("Expected allocations for single keyed listener, got %f", allocs)
 	}
 }

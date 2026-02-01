@@ -19,13 +19,15 @@ import (
 type SyncSignal[T any] struct {
 	// baseSignal handles listener management and storage
 	baseSignal *BaseSignal[T]
+	baseOnce   sync.Once
 }
 
-// syncSubscribersPool reduces memory allocations during signal emission by reusing
-// subscriber slice buffers. This optimization is particularly beneficial for signals
-// that are emitted frequently with many subscribers.
-var syncSubscribersPool = sync.Pool{
-	New: func() any { return make([]keyedListener[any], 0, 16) },
+func (s *SyncSignal[T]) ensureBase() {
+	s.baseOnce.Do(func() {
+		if s.baseSignal == nil {
+			s.baseSignal = NewBaseSignal[T](nil)
+		}
+	})
 }
 
 // AddListenerWithErr registers an error-returning listener that can report processing failures.
@@ -52,12 +54,15 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 		if _, ok := s.subscribersMap[key[0]]; ok {
 			return -1
 		}
+		s.ensureCapacity(1)
 		s.subscribersMap[key[0]] = struct{}{}
 		s.subscribers = append(s.subscribers, keyedListener[T]{
 			key:         key[0],
+			keyed:       true,
 			listenerErr: listener,
 		})
 	} else {
+		s.ensureCapacity(1)
 		s.subscribers = append(s.subscribers, keyedListener[T]{
 			listenerErr: listener,
 		})
@@ -68,31 +73,37 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 
 // AddListener registers a new listener. See BaseSignal.AddListener for details.
 func (s *SyncSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
+	s.ensureBase()
 	return s.baseSignal.AddListener(listener, key...)
 }
 
 // AddListenerWithErr registers an error-returning listener. See BaseSignal.AddListenerWithErr for details.
 func (s *SyncSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
+	s.ensureBase()
 	return s.baseSignal.AddListenerWithErr(listener, key...)
 }
 
 // RemoveListener removes a keyed listener. See BaseSignal.RemoveListener for details.
 func (s *SyncSignal[T]) RemoveListener(key string) int {
+	s.ensureBase()
 	return s.baseSignal.RemoveListener(key)
 }
 
 // Reset removes all subscribers. See BaseSignal.Reset for details.
 func (s *SyncSignal[T]) Reset() {
+	s.ensureBase()
 	s.baseSignal.Reset()
 }
 
 // Len returns the current number of subscribers. See BaseSignal.Len for details.
 func (s *SyncSignal[T]) Len() int {
+	s.ensureBase()
 	return s.baseSignal.Len()
 }
 
 // IsEmpty returns true if there are no subscribers. See BaseSignal.IsEmpty for details.
 func (s *SyncSignal[T]) IsEmpty() bool {
+	s.ensureBase()
 	return s.baseSignal.IsEmpty()
 }
 
@@ -112,61 +123,34 @@ func (s *SyncSignal[T]) IsEmpty() bool {
 //   - ctx: Context for cancellation and timeout. Checked before each listener invocation.
 //   - payload: Data to pass to all listeners
 func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
+	s.ensureBase()
 	// If context already canceled, bail out early
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
 	s.baseSignal.mu.RLock()
-	n := len(s.baseSignal.subscribers)
-	if n == 0 {
+	subscribers := s.baseSignal.subscribers
+	if len(subscribers) == 0 {
 		s.baseSignal.mu.RUnlock()
 		return
 	}
-	// Zero-allocation fast path for single listener, no key
-	if n == 1 && s.baseSignal.subscribers[0].key == "" {
-		listener := s.baseSignal.subscribers[0].listener
-		s.baseSignal.mu.RUnlock()
-		if listener != nil {
-			if ctx != nil && ctx.Err() != nil {
-				return
-			}
-			listener(ctx, payload)
-		}
-		return
-	}
-	var subscribersCopy []keyedListener[T]
-	// Use sync.Pool to reduce allocations
-	poolVal := syncSubscribersPool.Get()
-	if poolVal != nil {
-		if tmp, ok := poolVal.([]keyedListener[T]); ok && cap(tmp) >= n {
-			subscribersCopy = tmp[:n]
-		} else {
-			subscribersCopy = make([]keyedListener[T], n)
-		}
-	} else {
-		subscribersCopy = make([]keyedListener[T], n)
-	}
-	copy(subscribersCopy, s.baseSignal.subscribers)
-	s.baseSignal.mu.RUnlock()
-	// Use references in loop to avoid copying
-	for i := range subscribersCopy {
+	for i := range subscribers {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				break
 			}
 		}
-		sub := &subscribersCopy[i]
+		sub := &subscribers[i]
+		if sub.listenerErr != nil {
+			_ = sub.listenerErr(ctx, payload)
+			continue
+		}
 		if sub.listener != nil {
 			sub.listener(ctx, payload)
 		}
 	}
-	// Reset and put back in pool
-	for i := range subscribersCopy {
-		var zero keyedListener[T]
-		subscribersCopy[i] = zero
-	}
-	syncSubscribersPool.Put(subscribersCopy[:0])
+	s.baseSignal.mu.RUnlock()
 }
 
 // TryEmit synchronously invokes all registered listeners and returns any errors encountered.
@@ -197,6 +181,7 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 //   - context.Err() if the context is cancelled or times out
 //   - The first non-nil error returned by any SignalListenerErr
 func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
+	s.ensureBase()
 	// If context already canceled, bail out early with error
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -205,70 +190,26 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 	}
 
 	s.baseSignal.mu.RLock()
-	n := len(s.baseSignal.subscribers)
-	if n == 0 {
+	subscribers := s.baseSignal.subscribers
+	if len(subscribers) == 0 {
 		s.baseSignal.mu.RUnlock()
 		if ctx != nil {
 			return ctx.Err()
 		}
 		return nil
 	}
-	// Zero-allocation fast path for single listener, no key
-	if n == 1 && s.baseSignal.subscribers[0].key == "" {
-		l := s.baseSignal.subscribers[0]
-		s.baseSignal.mu.RUnlock()
-		if ctx != nil {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-		}
-		if l.listenerErr != nil {
-			return l.listenerErr(ctx, payload)
-		}
-		if l.listener != nil {
-			l.listener(ctx, payload)
-		}
-		if ctx != nil {
-			return ctx.Err()
-		}
-		return nil
-	}
-
-	var subscribersCopy []keyedListener[T]
-	// Use sync.Pool to reduce allocations
-	poolVal := syncSubscribersPool.Get()
-	if poolVal != nil {
-		if tmp, ok := poolVal.([]keyedListener[T]); ok && cap(tmp) >= n {
-			subscribersCopy = tmp[:n]
-		} else {
-			subscribersCopy = make([]keyedListener[T], n)
-		}
-	} else {
-		subscribersCopy = make([]keyedListener[T], n)
-	}
-	copy(subscribersCopy, s.baseSignal.subscribers)
-	s.baseSignal.mu.RUnlock()
-
-	// Ensure cleanup even on early return
-	defer func() {
-		for i := range subscribersCopy {
-			var zero keyedListener[T]
-			subscribersCopy[i] = zero
-		}
-		syncSubscribersPool.Put(subscribersCopy[:0])
-	}()
-
-	// Use references in loop to avoid copying
-	for i := range subscribersCopy {
+	for i := range subscribers {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
+				s.baseSignal.mu.RUnlock()
 				return err
 			}
 		}
-		sub := &subscribersCopy[i]
+		sub := &subscribers[i]
 		if sub.listenerErr != nil {
 			if err := sub.listenerErr(ctx, payload); err != nil {
+				s.baseSignal.mu.RUnlock()
 				return err
 			}
 			continue
@@ -278,6 +219,7 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 		}
 	}
 
+	s.baseSignal.mu.RUnlock()
 	if ctx != nil {
 		return ctx.Err()
 	}
