@@ -2,6 +2,8 @@ package signals_test
 
 import (
 	"context"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -154,4 +156,172 @@ func TestAsyncSignal_ContextCancellationDuringAsync(t *testing.T) {
 	// Cancel context while listener might be running
 	cancel()
 	wg.Wait()
+}
+
+func TestAsyncSignal_ListenerPanicDoesNotDeadlock(t *testing.T) {
+	sig := signals.New[int]()
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	called := 0
+	total := 20
+	panicIndex := 7
+
+	for i := 0; i < total; i++ {
+		if i == panicIndex {
+			sig.AddListener(func(ctx context.Context, v int) {
+				panic("boom")
+			})
+			continue
+		}
+		wg.Add(1)
+		sig.AddListener(func(ctx context.Context, v int) {
+			mu.Lock()
+			called++
+			mu.Unlock()
+			wg.Done()
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		sig.Emit(context.Background(), 1)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Emit appears to have deadlocked after listener panic")
+	}
+
+	wg.Wait()
+
+	mu.Lock()
+	got := called
+	mu.Unlock()
+	if got != total-1 {
+		t.Fatalf("Expected %d listeners to complete, got %d", total-1, got)
+	}
+}
+
+func TestAsyncSignal_SingleListenerIsAsync(t *testing.T) {
+	sig := signals.New[int]()
+
+	var stackBuf [2048]byte
+	var stackLen int
+
+	sig.AddListener(func(ctx context.Context, v int) {
+		stackLen = runtime.Stack(stackBuf[:], false)
+	})
+
+	sig.Emit(context.Background(), 1)
+
+	if stackLen == 0 {
+		t.Fatal("Expected stack to be captured")
+	}
+	stack := string(stackBuf[:stackLen])
+	if containsEmit(stack) {
+		t.Fatal("Listener ran in Emit goroutine; expected async dispatch")
+	}
+}
+
+func containsEmit(stack string) bool {
+	return strings.Contains(stack, "signals.(*AsyncSignal") && strings.Contains(stack, "Emit")
+}
+
+func TestAsyncSignal_EmitSkipsWhenContextCanceled(t *testing.T) {
+	sig := signals.New[int]()
+
+	called := 0
+	sig.AddListener(func(ctx context.Context, v int) {
+		called++
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	sig.Emit(ctx, 1)
+
+	if called != 0 {
+		t.Fatalf("Expected no listener calls when context is canceled, got %d", called)
+	}
+}
+
+func TestAsyncSignal_EmitIsNonBlocking(t *testing.T) {
+	sig := signals.New[int]()
+
+	gate := make(chan struct{})
+	sig.AddListener(func(ctx context.Context, v int) {
+		<-gate
+	})
+
+	done := make(chan struct{})
+	go func() {
+		sig.Emit(context.Background(), 1)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Expected non-blocking Emit
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("Emit blocked; expected fire-and-forget behavior")
+	}
+
+	close(gate)
+}
+
+func TestAsyncSignal_ContextTimeoutStopsListeners(t *testing.T) {
+	sig := signals.New[int]()
+
+	called := 0
+	sig.AddListener(func(ctx context.Context, v int) {
+		called++
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+	time.Sleep(1 * time.Millisecond)
+
+	sig.Emit(ctx, 1)
+
+	if called != 0 {
+		t.Fatalf("Expected no listener calls when context is timed out, got %d", called)
+	}
+}
+
+func TestAsyncSignal_CancelStopsOtherListeners(t *testing.T) {
+	sig := signals.New[int]()
+
+	var calledSecond int
+	ctx, cancel := context.WithCancel(context.Background())
+
+	sig.AddListener(func(ctx context.Context, v int) {
+		cancel()
+	})
+	sig.AddListener(func(ctx context.Context, v int) {
+		calledSecond++
+	})
+
+	sig.Emit(ctx, 1)
+
+	if calledSecond != 0 {
+		t.Fatalf("Expected cancellation to prevent other listeners, got %d", calledSecond)
+	}
+}
+
+func TestAsyncSignal_ListenerPanicDoesNotCrashSmallPath(t *testing.T) {
+	sig := signals.New[int]()
+	sig.AddListener(func(ctx context.Context, v int) {
+		panic("boom")
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Expected async emit to handle listener panic, got %v", r)
+		}
+	}()
+
+	sig.Emit(context.Background(), 1)
 }
