@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,14 +109,11 @@ func TestSignal_ConcurrentStress(t *testing.T) {
 
 	signal := signals.New[int]()
 	var wg sync.WaitGroup
-	var mu sync.Mutex
-	results := make(map[int]int)
+	var count int64
 
 	// Listener that records payloads
 	signal.AddListener(func(ctx context.Context, v int) {
-		mu.Lock()
-		results[v]++
-		mu.Unlock()
+		atomic.AddInt64(&count, 1)
 	})
 
 	// Start goroutines that add/remove listeners and emit signals
@@ -138,8 +136,14 @@ func TestSignal_ConcurrentStress(t *testing.T) {
 
 	wg.Wait()
 
+	expected := int64(goroutines * iterations)
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadInt64(&count) < expected && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	// Check for data races and panics (run with -race)
-	if len(results) == 0 {
+	if atomic.LoadInt64(&count) == 0 {
 		t.Error("No signals were received")
 	}
 }
