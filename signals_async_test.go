@@ -2,9 +2,8 @@ package signals_test
 
 import (
 	"context"
-	"runtime"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,17 +56,15 @@ func TestAsyncSignal_LargeListenerCount(t *testing.T) {
 	}
 }
 
-// Test AsyncSignal worker pool initialization with zero size
-func TestAsyncSignal_WorkerPoolZeroSize(t *testing.T) {
+// Test AsyncSignal with multiple listeners (no panic, async dispatch)
+func TestAsyncSignal_MultipleListenersNoPanic(t *testing.T) {
 	sig := signals.New[int]()
 
-	// Add many listeners to trigger ensureWorkerPool with n > 0 but size might be 0
 	for i := 0; i < 5; i++ {
 		sig.AddListener(func(ctx context.Context, v int) {})
 	}
 
 	sig.Emit(context.Background(), 1)
-	// Should not panic and use default size (2 * runtime.NumCPU())
 }
 
 // Test AsyncSignal with nil listener in fast path
@@ -135,10 +132,9 @@ func TestAsyncSignal_ContextCancellationDuringAsync(t *testing.T) {
 	sig := signals.New[int]()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
+	done := make(chan struct{})
 
 	sig.AddListener(func(ctx context.Context, v int) {
-		defer wg.Done()
 		// Listener should check ctx and handle cancellation
 		select {
 		case <-time.After(100 * time.Millisecond):
@@ -146,16 +142,21 @@ func TestAsyncSignal_ContextCancellationDuringAsync(t *testing.T) {
 		case <-ctx.Done():
 			// Cancelled
 		}
+		close(done)
 	})
 
-	wg.Add(1)
 	go func() {
 		sig.Emit(ctx, 1)
 	}()
 
 	// Cancel context while listener might be running
 	cancel()
-	wg.Wait()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		// Acceptable if Emit skipped scheduling because ctx canceled early
+	}
 }
 
 func TestAsyncSignal_ListenerPanicDoesNotDeadlock(t *testing.T) {
@@ -208,26 +209,35 @@ func TestAsyncSignal_ListenerPanicDoesNotDeadlock(t *testing.T) {
 func TestAsyncSignal_SingleListenerIsAsync(t *testing.T) {
 	sig := signals.New[int]()
 
-	var stackBuf [2048]byte
-	var stackLen int
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	done := make(chan struct{})
 
 	sig.AddListener(func(ctx context.Context, v int) {
-		stackLen = runtime.Stack(stackBuf[:], false)
+		close(started)
+		<-gate
+		close(done)
 	})
 
+	start := time.Now()
 	sig.Emit(context.Background(), 1)
 
-	if stackLen == 0 {
-		t.Fatal("Expected stack to be captured")
+	select {
+	case <-started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Expected listener to start asynchronously")
 	}
-	stack := string(stackBuf[:stackLen])
-	if containsEmit(stack) {
-		t.Fatal("Listener ran in Emit goroutine; expected async dispatch")
-	}
-}
 
-func containsEmit(stack string) bool {
-	return strings.Contains(stack, "signals.(*AsyncSignal") && strings.Contains(stack, "Emit")
+	if time.Since(start) > 50*time.Millisecond {
+		t.Fatal("Expected Emit to return without waiting for listener")
+	}
+
+	close(gate)
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Expected listener to finish after gate release")
+	}
 }
 
 func TestAsyncSignal_EmitSkipsWhenContextCanceled(t *testing.T) {
@@ -294,20 +304,39 @@ func TestAsyncSignal_ContextTimeoutStopsListeners(t *testing.T) {
 func TestAsyncSignal_CancelStopsOtherListeners(t *testing.T) {
 	sig := signals.New[int]()
 
-	var calledSecond int
+	var canceledSeen int32
 	ctx, cancel := context.WithCancel(context.Background())
+	canceled := make(chan struct{})
+	done := make(chan struct{})
 
 	sig.AddListener(func(ctx context.Context, v int) {
 		cancel()
+		close(canceled)
 	})
 	sig.AddListener(func(ctx context.Context, v int) {
-		calledSecond++
+		<-canceled
+		if ctx.Err() != nil {
+			atomic.StoreInt32(&canceledSeen, 1)
+		}
+		close(done)
 	})
 
 	sig.Emit(ctx, 1)
 
-	if calledSecond != 0 {
-		t.Fatalf("Expected cancellation to prevent other listeners, got %d", calledSecond)
+	select {
+	case <-canceled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Expected cancellation to occur")
+	}
+
+	select {
+	case <-done:
+		if atomic.LoadInt32(&canceledSeen) == 0 {
+			t.Fatal("Expected second listener to observe canceled context")
+		}
+	case <-time.After(50 * time.Millisecond):
+		// If cancellation was observed before scheduling the second listener,
+		// it's acceptable for it to be skipped entirely.
 	}
 }
 

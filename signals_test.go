@@ -221,9 +221,11 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 	var count int
 	var timeoutCount int
 	var mu sync.Mutex
+	var wg sync.WaitGroup
 
 	testSignal := signals.New[int]()
 	testSignal.AddListener(func(ctx context.Context, v int) {
+		defer wg.Done()
 		time.Sleep(100 * time.Millisecond)
 		select {
 		case <-ctx.Done():
@@ -237,6 +239,7 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 		}
 	})
 	testSignal.AddListener(func(ctx context.Context, v int) {
+		defer wg.Done()
 		time.Sleep(500 * time.Millisecond)
 		select {
 		case <-ctx.Done():
@@ -250,6 +253,7 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 		}
 	})
 
+	wg.Add(6)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	testSignal.Emit(ctx, 1)
@@ -261,6 +265,8 @@ func TestSignalAsyncWithTimeout(t *testing.T) {
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 	defer cancel3()
 	testSignal.Emit(ctx3, 3)
+
+	wg.Wait()
 
 	mu.Lock()
 	c := count

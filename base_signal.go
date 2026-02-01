@@ -10,6 +10,8 @@ import (
 type keyedListener[T any] struct {
 	// key is an optional unique identifier for the listener, allowing targeted removal
 	key string
+	// keyed indicates whether this listener was added with an explicit key
+	keyed bool
 
 	// listener is the standard callback function invoked when the signal is emitted
 	listener SignalListener[T]
@@ -110,6 +112,23 @@ func NewBaseSignal[T any](opts *SignalOptions) *BaseSignal[T] {
 	}
 }
 
+func (s *BaseSignal[T]) ensureCapacity(extra int) {
+	if s.growthFunc == nil {
+		return
+	}
+	required := len(s.subscribers) + extra
+	if required <= cap(s.subscribers) {
+		return
+	}
+	newCap := s.growthFunc(cap(s.subscribers))
+	if newCap < required {
+		newCap = required
+	}
+	newSubs := make([]keyedListener[T], len(s.subscribers), newCap)
+	copy(newSubs, s.subscribers)
+	s.subscribers = newSubs
+}
+
 // AddListener registers a new listener that will be invoked when the signal is emitted.
 // The listener will receive the context and payload on each emission.
 //
@@ -144,12 +163,15 @@ func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) i
 		if _, ok := s.subscribersMap[key[0]]; ok {
 			return -1
 		}
+		s.ensureCapacity(1)
 		s.subscribersMap[key[0]] = struct{}{}
 		s.subscribers = append(s.subscribers, keyedListener[T]{
 			key:      key[0],
+			keyed:    true,
 			listener: listener,
 		})
 	} else {
+		s.ensureCapacity(1)
 		s.subscribers = append(s.subscribers, keyedListener[T]{
 			listener: listener,
 		})
@@ -186,7 +208,7 @@ func (s *BaseSignal[T]) RemoveListener(key string) int {
 		delete(s.subscribersMap, key)
 		n := len(s.subscribers)
 		for i, sub := range s.subscribers {
-			if sub.key == key {
+			if sub.keyed && sub.key == key {
 				// Swap with last and remove last (swap-remove, avoids allocation)
 				s.subscribers[i] = s.subscribers[n-1]
 				s.subscribers = s.subscribers[:n-1]
