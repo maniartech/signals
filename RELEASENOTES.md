@@ -4,6 +4,10 @@
 
 ### ⚠️ Breaking Changes
 
+> **Migration in one line:** if you relied on `AsyncSignal.Emit` blocking until
+> listeners finished, change `Emit` → `EmitAndWait`. Your code still compiles;
+> the behavior changes silently at runtime, so update before upgrading.
+
 - `AsyncSignal.Emit` is now fire-and-forget: it returns immediately without waiting for listeners. Use the new `EmitAndWait` for the previous blocking behavior.
 - `SyncSignal.Emit` now invokes error-returning listeners (their errors are discarded). `TryEmit` behavior is unchanged.
 - `Emit` (sync and async) skips all listeners when the provided context is already canceled.

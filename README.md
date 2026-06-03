@@ -6,6 +6,12 @@
 fire-and-forget async signals and error-aware sync signals. It favors
 simple APIs, context propagation, and predictable concurrency behavior.
 
+> ⚠️ **Breaking change (v1.4.0):** `AsyncSignal.Emit` is now truly
+> fire-and-forget — it schedules listeners and **returns immediately** instead
+> of waiting for them. This is a *silent runtime* change (your code still
+> compiles). **If you relied on the old blocking behavior, switch
+> `Emit` → `EmitAndWait`.** See [Migration Note](#-migration-note-async-emit-semantics).
+
 ## Key Features
 
 - 🧭 **Two Signal Types**: Async for fire-and-forget, Sync for error-aware workflows
@@ -253,6 +259,14 @@ waited for all listeners to finish.
 ## Documentation
 
 [![GoDoc](https://godoc.org/github.com/maniartech/signals?status.svg)](https://godoc.org/github.com/maniartech/signals)
+
+## Contributing
+
+`signals` accepts a **deliberately narrow scope** of contributions. Small,
+specific fixes tied to a filed issue are welcome. **Public API changes,
+behavioral/semantic changes, and architectural changes are maintainer-led and
+require an approved issue first.** Please read [CONTRIBUTING.md](CONTRIBUTING.md)
+before opening a pull request.
 
 ## License
 
