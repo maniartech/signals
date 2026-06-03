@@ -48,24 +48,30 @@ func TestSyncSignal_AddListenerWithErr_EdgeCases(t *testing.T) {
 	sig.AddListenerWithErr(nil)
 }
 
-// Test SyncSignal Emit with error listeners (they should be ignored by regular Emit)
-func TestSyncSignal_EmitIgnoresErrorListeners(t *testing.T) {
+// Test SyncSignal Emit with error listeners (invoked by Emit; errors are discarded)
+func TestSyncSignal_EmitDiscardsErrorListenerErrors(t *testing.T) {
 	sig := signals.NewSync[int]()
 	called := false
+	errListenerCalled := false
 
 	sig.AddListener(func(ctx context.Context, v int) {
 		called = true
 	})
 
-	// Add error listener - should be ignored by regular Emit
+	// Error listener is invoked by Emit; its returned error is discarded.
+	// Use TryEmit when errors must be observed.
 	sig.AddListenerWithErr(func(ctx context.Context, v int) error {
-		return errors.New("should not be called by Emit")
+		errListenerCalled = true
+		return errors.New("discarded by Emit")
 	})
 
 	sig.Emit(context.Background(), 1)
 
 	if !called {
 		t.Error("Regular listener should have been called")
+	}
+	if !errListenerCalled {
+		t.Error("Error listener should be invoked by Emit (with its error discarded)")
 	}
 }
 

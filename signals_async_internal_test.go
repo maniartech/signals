@@ -23,9 +23,14 @@ func TestAsyncSignal_NoGoroutineLeakAfterEmit(t *testing.T) {
 
 	sig.Emit(context.Background(), 1)
 	wg.Wait()
-	time.Sleep(50 * time.Millisecond)
-
+	// Poll with a deadline instead of a fixed sleep to avoid flakiness on
+	// slow or heavily loaded machines.
+	deadline := time.Now().Add(2 * time.Second)
 	after := runtime.NumGoroutine()
+	for after > base+5 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		after = runtime.NumGoroutine()
+	}
 	if after > base+5 {
 		t.Fatalf("Expected goroutine count to return near baseline; baseline=%d after=%d", base, after)
 	}
@@ -52,9 +57,14 @@ func TestAsyncSignal_NoGoroutineLeakAfterManyEmits(t *testing.T) {
 		sig.Emit(context.Background(), 1)
 	}
 	wg.Wait()
-	time.Sleep(50 * time.Millisecond)
-
+	// Poll with a deadline instead of a fixed sleep to avoid flakiness on
+	// slow or heavily loaded machines.
+	deadline := time.Now().Add(2 * time.Second)
 	after := runtime.NumGoroutine()
+	for after > base+5 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		after = runtime.NumGoroutine()
+	}
 	if after > base+5 {
 		t.Fatalf("Expected goroutine count to return near baseline; baseline=%d after=%d", base, after)
 	}

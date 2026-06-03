@@ -1,5 +1,28 @@
 # Release Notes
 
+## Unreleased
+
+### ⚠️ Breaking Changes
+
+- `AsyncSignal.Emit` is now fire-and-forget: it returns immediately without waiting for listeners. Use the new `EmitAndWait` for the previous blocking behavior.
+- `SyncSignal.Emit` now invokes error-returning listeners (their errors are discarded). `TryEmit` behavior is unchanged.
+- `Emit` (sync and async) skips all listeners when the provided context is already canceled.
+
+### Added
+
+- `AsyncSignal.EmitAndWait` — schedules listeners concurrently and waits for completion.
+- `signals.SetPanicHandler` — configures how recovered async-listener panics are reported (default: standard library `log`).
+- Zero-value `SyncSignal` / `AsyncSignal` are now safe to use without constructors.
+- `SignalOptions.GrowthFunc` is now honored when the subscriber list grows.
+
+### Fixed
+
+- `RemoveListener("")` no longer removes unkeyed listeners.
+- Keyed listeners are tracked with an explicit `keyed` flag.
+- Race and staticcheck findings in tests.
+
+*Incorporates PR #14 by [@joshuafuller](https://github.com/joshuafuller) with maintainer fixes on top.*
+
 ## v1.3.1: Constructor Return Types Fixed
 
 **Released**: September 2025 | **Commit**: 8820e46

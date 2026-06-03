@@ -219,17 +219,14 @@ func TestAsyncSignal_SingleListenerIsAsync(t *testing.T) {
 		close(done)
 	})
 
-	start := time.Now()
+	// If Emit waited for the listener, it would deadlock on the gate below,
+	// so returning at all proves fire-and-forget behavior.
 	sig.Emit(context.Background(), 1)
 
 	select {
 	case <-started:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Expected listener to start asynchronously")
-	}
-
-	if time.Since(start) > 50*time.Millisecond {
-		t.Fatal("Expected Emit to return without waiting for listener")
 	}
 
 	close(gate)
@@ -293,7 +290,8 @@ func TestAsyncSignal_ContextTimeoutStopsListeners(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
-	time.Sleep(1 * time.Millisecond)
+	// Deterministically wait until the deadline has expired before emitting.
+	<-ctx.Done()
 
 	sig.Emit(ctx, 1)
 

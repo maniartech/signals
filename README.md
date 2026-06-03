@@ -16,6 +16,8 @@ simple APIs, context propagation, and predictable concurrency behavior.
 - 📦 **Zero Dependencies**: Pure Go, no external dependencies
 - 🚀 **Async & Sync**: Both fire-and-forget and error-handling patterns
 
+✅ **Production-Ready**: Used by [ManiarTech®️](https://maniartech.com) and other companies in mission-critical applications.
+
 [![GoReportCard example](https://goreportcard.com/badge/github.com/nanomsg/mangos)](https://goreportcard.com/report/github.com/maniartech/signals)
 [![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
 [![made-with-Go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg)](https://go.dev/)
@@ -186,6 +188,9 @@ UserLoggedIn.AddListener(func(ctx context.Context, user User) {
 // Emit (schedules listeners and returns immediately)
 UserLoggedIn.Emit(ctx, user)
 
+// Emit and block until every started listener has returned
+UserLoggedIn.EmitAndWait(ctx, user)
+
 // Remove listener
 UserLoggedIn.RemoveListener("optional-key")
 ```
@@ -231,6 +236,19 @@ go func() {
     cancel() // Cancels in-flight TryEmit operations
 }()
 ```
+
+## ⚠️ Migration Note: Async `Emit` Semantics
+
+`AsyncSignal.Emit` is now truly fire-and-forget: it schedules each listener
+in its own goroutine and returns immediately. In earlier releases, `Emit`
+waited for all listeners to finish.
+
+- If you relied on the old blocking behavior, switch to `EmitAndWait`.
+- If the supplied context is already canceled, `Emit`/`EmitAndWait` skip all listeners.
+- Panics in async listeners are recovered and reported via `signals.SetPanicHandler`
+  (default: logged with the standard library `log` package).
+- `SyncSignal.Emit` now also invokes error-returning listeners, discarding their
+  errors; use `TryEmit` when errors must stop emission.
 
 ## Documentation
 
