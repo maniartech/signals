@@ -1,0 +1,48 @@
+goos: windows
+goarch: amd64
+pkg: github.com/maniartech/signals
+cpu: AMD Ryzen 7 5700G with Radeon Graphics         
+BenchmarkSignalEmit_SingleListener-16             	 4086050	       318.7 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_SingleListener-16             	 4225976	       330.6 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_SingleListener-16             	 3849480	       314.3 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_SingleListener-16             	 4258911	       329.8 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_SingleListener-16             	 4292924	       288.8 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_SingleListener-16             	 4241148	       285.1 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_ManyListeners-16              	   38918	     31328 ns/op	    6412 B/op	     100 allocs/op
+BenchmarkSignalEmit_ManyListeners-16              	   39724	     29960 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkSignalEmit_ManyListeners-16              	   38620	     27924 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkSignalEmit_ManyListeners-16              	   44844	     29835 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkSignalEmit_ManyListeners-16              	   30526	     37270 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkSignalEmit_ManyListeners-16              	   33708	     34725 ns/op	    6400 B/op	     100 allocs/op
+BenchmarkSignalEmit_Concurrent-16                 	 2304754	       678.4 ns/op	      70 B/op	       1 allocs/op
+BenchmarkSignalEmit_Concurrent-16                 	 1905378	       777.7 ns/op	      65 B/op	       1 allocs/op
+BenchmarkSignalEmit_Concurrent-16                 	 1553599	       688.5 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_Concurrent-16                 	 2039979	       595.9 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_Concurrent-16                 	 2006452	       536.2 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSignalEmit_Concurrent-16                 	 2299036	       539.8 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSyncEmit_SingleListener-16               	67868696	        18.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_SingleListener-16               	69763790	        17.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_SingleListener-16               	64082366	        17.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_SingleListener-16               	76563814	        18.12 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_SingleListener-16               	65813287	        16.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_SingleListener-16               	73891624	        17.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_TenListeners-16                 	17003404	        69.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_TenListeners-16                 	16247217	        71.49 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_TenListeners-16                 	17749614	        70.14 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_TenListeners-16                 	16949319	        66.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_TenListeners-16                 	19116498	        66.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_TenListeners-16                 	19812540	        69.72 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_Concurrent-16                   	539488537	         2.308 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_Concurrent-16                   	399555960	         2.574 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_Concurrent-16                   	459158187	         4.055 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_Concurrent-16                   	319298906	         3.434 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_Concurrent-16                   	473952554	         2.618 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncEmit_Concurrent-16                   	431055694	         3.383 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSignalAddRemoveListener_Concurrent-16    	   31140	     32724 ns/op	   81973 B/op	       5 allocs/op
+BenchmarkSignalAddRemoveListener_Concurrent-16    	   38554	     28263 ns/op	   81973 B/op	       5 allocs/op
+BenchmarkSignalAddRemoveListener_Concurrent-16    	   45145	     29861 ns/op	   81973 B/op	       5 allocs/op
+BenchmarkSignalAddRemoveListener_Concurrent-16    	   46190	     27773 ns/op	   81974 B/op	       5 allocs/op
+BenchmarkSignalAddRemoveListener_Concurrent-16    	   40477	     28171 ns/op	   81973 B/op	       5 allocs/op
+BenchmarkSignalAddRemoveListener_Concurrent-16    	   38434	     31408 ns/op	   81973 B/op	       5 allocs/op
+PASS
+ok  	github.com/maniartech/signals	71.989s

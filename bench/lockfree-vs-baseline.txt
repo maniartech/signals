@@ -1,0 +1,42 @@
+goos: windows
+goarch: amd64
+pkg: github.com/maniartech/signals
+cpu: AMD Ryzen 7 5700G with Radeon Graphics         
+                                      │ bench/baseline.txt │            bench/lockfree.txt            │
+                                      │       sec/op       │     sec/op      vs base                  │
+SignalEmit_SingleListener-16                  351.4n ± 12%     316.5n ± 10%      -9.92% (p=0.002 n=6)
+SignalEmit_ManyListeners-16                   28.20µ ± 13%     30.64µ ± 22%           ~ (p=0.093 n=6)
+SignalEmit_Concurrent-16                      480.4n ± 10%     637.1n ± 22%     +32.63% (p=0.002 n=6)
+SyncEmit_SingleListener-16                    17.77n ±  3%     17.91n ±  6%           ~ (p=0.937 n=6)
+SyncEmit_TenListeners-16                     210.90n ± 16%     69.77n ±  4%     -66.92% (p=0.002 n=6)
+SyncEmit_Concurrent-16                       49.790n ±  7%     3.001n ± 35%     -93.97% (p=0.002 n=6)
+SignalAddRemoveListener_Concurrent-16         199.2n ±  9%   29062.0n ± 13%  +14493.02% (p=0.002 n=6)
+geomean                                       291.0n           352.3n           +21.04%
+
+                                      │ bench/baseline.txt │               bench/lockfree.txt               │
+                                      │        B/op        │      B/op       vs base                        │
+SignalEmit_SingleListener-16                 112.00 ± 0%         64.00 ± 0%       -42.86% (p=0.002 n=6)
+SignalEmit_ManyListeners-16                10.250Ki ± 0%       6.250Ki ± 0%       -39.02% (p=0.002 n=6)
+SignalEmit_Concurrent-16                     112.00 ± 3%         64.00 ± 9%       -42.86% (p=0.002 n=6)
+SyncEmit_SingleListener-16                    0.000 ± 0%         0.000 ± 0%             ~ (p=1.000 n=6) ¹
+SyncEmit_TenListeners-16                      416.0 ± 0%           0.0 ± 0%      -100.00% (p=0.002 n=6)
+SyncEmit_Concurrent-16                        0.000 ± 0%         0.000 ± 0%             ~ (p=1.000 n=6) ¹
+SignalAddRemoveListener_Concurrent-16         4.000 ± 0%     81973.000 ± 0%  +2049225.00% (p=0.002 n=6)
+geomean                                                  ²                   ?                          ² ³
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+³ ratios must be >0 to compute geomean
+
+                                      │ bench/baseline.txt │           bench/lockfree.txt           │
+                                      │     allocs/op      │ allocs/op   vs base                    │
+SignalEmit_SingleListener-16                  2.000 ± 0%     1.000 ± 0%   -50.00% (p=0.002 n=6)
+SignalEmit_ManyListeners-16                   101.0 ± 0%     100.0 ± 0%    -0.99% (p=0.002 n=6)
+SignalEmit_Concurrent-16                      2.000 ± 0%     1.000 ± 0%   -50.00% (p=0.002 n=6)
+SyncEmit_SingleListener-16                    0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=6) ¹
+SyncEmit_TenListeners-16                      1.000 ± 0%     0.000 ± 0%  -100.00% (p=0.002 n=6)
+SyncEmit_Concurrent-16                        0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=6) ¹
+SignalAddRemoveListener_Concurrent-16         1.000 ± 0%     5.000 ± 0%  +400.00% (p=0.002 n=6)
+geomean                                                  ²               ?                      ² ³
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+³ ratios must be >0 to compute geomean

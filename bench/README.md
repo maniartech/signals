@@ -53,3 +53,33 @@ Numbers are machine-specific; reproduce locally for your hardware.
 
 > Async numbers are **dispatch rate** (goroutine-per-listener), not listener
 > completion, and are the baseline for the separate async worker-pool work (FR-7).
+
+## Phase 2 result — lock-free copy-on-write (measured)
+
+`lockfree.txt` is the "after" measurement; `lockfree-vs-baseline.txt` is the committed
+`benchstat baseline.txt lockfree.txt` comparison. Reproduce both with the workflow
+above. Headlines (same hardware as the baseline):
+
+| Benchmark | Before | After | Change |
+|---|---|---|---|
+| `SyncEmit_TenListeners` | 210.9 ns · 416 B · 1 alloc | 69.8 ns · **0 B · 0 alloc** | **−67% time, snapshot alloc eliminated** |
+| `SyncEmit_Concurrent` | 49.8 ns | **3.0 ns** | **−94% (near-linear scaling)** |
+| `SyncEmit_SingleListener` | 17.77 ns · 0 alloc | 17.91 ns · 0 alloc | ~unchanged |
+| `SignalEmit_*` (async) | — | — | −43% B/op, −50% allocs (snapshot removed) |
+
+**Honest caveats (read these before quoting numbers):**
+
+- **Single-listener sync did not get faster.** The previous code already had a
+  zero-allocation 4-element stack snapshot fast path (~17.8 ns); the atomic load is
+  comparable. We did **not** reach the aspirational ~10–12 ns. The lock-free win is
+  in the **multi-listener** and **concurrent** read paths, not single-listener.
+- **Writes got more expensive — by design.** Copy-on-write rebuilds the whole
+  subscriber slice on every `AddListener`/`RemoveListener`, so writes are O(n) instead
+  of in-place O(1). The `SignalAddRemoveListener_Concurrent` microbenchmark (tight
+  add/remove churn against a ~1000-element slice) regresses sharply (~200 ns → ~29 µs,
+  +82 KB/op) for exactly this reason. This is the intended "lock-free reads, locked
+  writes" trade: a signals library emits orders of magnitude more often than it
+  mutates its listener set, so paying O(n) on rare writes to make reads lock-free and
+  allocation-free is the correct bargain. Workloads that churn listeners as hot as
+  they emit are **not** a good fit for this design.
+

@@ -3,6 +3,7 @@ package signals
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 // keyedListener represents a listener paired with an optional identification key.
@@ -26,8 +27,16 @@ type keyedListener[T any] struct {
 // emission logic to derived types. This design allows for different emission strategies
 // (synchronous, asynchronous) while sharing common listener management code.
 //
-// The BaseSignal uses an optimized storage strategy with both a slice for ordered
-// iteration and a map for O(1) key lookups, ensuring efficient operations at scale.
+// # Concurrency model: lock-free reads, locked writes (copy-on-write)
+//
+// The subscriber list is stored as an *immutable* slice behind an atomic.Pointer.
+// Readers (Emit/TryEmit/dispatch) perform a single atomic load and iterate the slice
+// directly — no lock, no copy, no allocation on the hot path. Writers
+// (Add/Remove/Reset) serialize on a write mutex, build a brand-new slice, and
+// atomically swap it in. Because a published slice is never mutated again, a reader
+// iterating an old slice is unaffected by a concurrent writer publishing a new one;
+// the atomic pointer provides the necessary happens-before relationship. This is
+// "lock-free reads, locked writes" copy-on-write — not a full CAS-loop algorithm.
 //
 // Example:
 //
@@ -40,13 +49,19 @@ type keyedListener[T any] struct {
 //		// Custom implementation for emitting the signal
 //	}
 type BaseSignal[T any] struct {
-	// mu protects concurrent access to subscribers
-	mu sync.RWMutex
+	// writeMu serializes writers (AddListener/RemoveListener/Reset). Readers never
+	// take this lock.
+	writeMu sync.Mutex
 
-	// subscribers maintains the ordered list of registered listeners
-	subscribers []keyedListener[T]
+	// subs holds the current immutable subscriber slice. Readers load it atomically
+	// and iterate without copying; writers swap in a freshly built slice. A non-nil
+	// pointer is installed by NewBaseSignal, but load() tolerates a nil (zero-value)
+	// pointer and reports an empty list.
+	subs atomic.Pointer[[]keyedListener[T]]
 
-	// subscribersMap provides O(1) lookup for keyed listeners to prevent duplicates
+	// subscribersMap provides O(1) lookup for keyed listeners to prevent duplicates.
+	// It is only read or mutated while holding writeMu, so it needs no separate
+	// synchronization.
 	subscribersMap map[string]struct{}
 
 	// growthFunc determines capacity allocation when the subscriber list needs to grow
@@ -105,28 +120,43 @@ func NewBaseSignal[T any](opts *SignalOptions) *BaseSignal[T] {
 			growth = opts.GrowthFunc
 		}
 	}
-	return &BaseSignal[T]{
-		subscribers:    make([]keyedListener[T], 0, initCap),
+	s := &BaseSignal[T]{
 		subscribersMap: make(map[string]struct{}),
 		growthFunc:     growth,
 	}
+	initial := make([]keyedListener[T], 0, initCap)
+	s.subs.Store(&initial)
+	return s
 }
 
-func (s *BaseSignal[T]) ensureCapacity(extra int) {
-	if s.growthFunc == nil {
-		return
+// load returns the current immutable subscriber slice via a single atomic load.
+// It is the read primitive for every emit path. A nil pointer (possible only on a
+// zero-value BaseSignal that bypassed NewBaseSignal) reports an empty list.
+func (s *BaseSignal[T]) load() []keyedListener[T] {
+	if p := s.subs.Load(); p != nil {
+		return *p
 	}
-	required := len(s.subscribers) + extra
-	if required <= cap(s.subscribers) {
-		return
+	return nil
+}
+
+// cloneForWrite returns a fresh copy of the current subscriber slice with room for
+// extra additional entries, honoring growthFunc when the capacity must grow. The
+// caller must hold writeMu. Copy-on-write requires a new backing array on every
+// write so the previously published slice is never mutated while readers iterate it.
+func (s *BaseSignal[T]) cloneForWrite(old []keyedListener[T], extra int) []keyedListener[T] {
+	required := len(old) + extra
+	newCap := cap(old)
+	if required > newCap {
+		if s.growthFunc != nil {
+			newCap = s.growthFunc(cap(old))
+		}
+		if newCap < required {
+			newCap = required
+		}
 	}
-	newCap := s.growthFunc(cap(s.subscribers))
-	if newCap < required {
-		newCap = required
-	}
-	newSubs := make([]keyedListener[T], len(s.subscribers), newCap)
-	copy(newSubs, s.subscribers)
-	s.subscribers = newSubs
+	dup := make([]keyedListener[T], len(old), newCap)
+	copy(dup, old)
+	return dup
 }
 
 // AddListener registers a new listener that will be invoked when the signal is emitted.
@@ -152,32 +182,73 @@ func (s *BaseSignal[T]) ensureCapacity(extra int) {
 //	}, "key1")
 //	fmt.Println("Number of subscribers after adding listener:", count)
 func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if listener == nil {
 		panic("listener cannot be nil")
 	}
 
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	var k string
+	keyed := false
 	if len(key) > 0 {
-		if _, ok := s.subscribersMap[key[0]]; ok {
+		k = key[0]
+		keyed = true
+		if _, ok := s.subscribersMap[k]; ok {
 			return -1
 		}
-		s.ensureCapacity(1)
-		s.subscribersMap[key[0]] = struct{}{}
-		s.subscribers = append(s.subscribers, keyedListener[T]{
-			key:      key[0],
-			keyed:    true,
-			listener: listener,
-		})
-	} else {
-		s.ensureCapacity(1)
-		s.subscribers = append(s.subscribers, keyedListener[T]{
-			listener: listener,
-		})
 	}
 
-	return len(s.subscribers)
+	old := s.load()
+	dup := s.cloneForWrite(old, 1)
+	dup = append(dup, keyedListener[T]{key: k, keyed: keyed, listener: listener})
+	if keyed {
+		s.subscribersMap[k] = struct{}{}
+	}
+	s.subs.Store(&dup)
+	return len(dup)
+}
+
+// AddListenerWithErr registers an error-returning listener that can report processing
+// failures. These listeners are particularly useful with TryEmit(), which can detect
+// and return errors.
+//
+// Parameters:
+//   - listener: The error-returning callback function (must not be nil, will panic otherwise)
+//   - key: Optional unique identifier for the listener
+//
+// Returns:
+//   - The total number of subscribers after adding the listener
+//   - Returns -1 if a keyed listener with the same key already exists
+//
+// Note: When both listener and listenerErr are set, listenerErr takes precedence during
+// TryEmit().
+func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
+	if listener == nil {
+		panic("listener cannot be nil")
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	var k string
+	keyed := false
+	if len(key) > 0 {
+		k = key[0]
+		keyed = true
+		if _, ok := s.subscribersMap[k]; ok {
+			return -1
+		}
+	}
+
+	old := s.load()
+	dup := s.cloneForWrite(old, 1)
+	dup = append(dup, keyedListener[T]{key: k, keyed: keyed, listenerErr: listener})
+	if keyed {
+		s.subscribersMap[k] = struct{}{}
+	}
+	s.subs.Store(&dup)
+	return len(dup)
 }
 
 // RemoveListener removes a listener identified by the given key from the signal.
@@ -201,23 +272,29 @@ func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) i
 //	count := signal.RemoveListener("key1")
 //	fmt.Println("Number of subscribers after removing listener:", count)
 func (s *BaseSignal[T]) RemoveListener(key string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
-	if _, ok := s.subscribersMap[key]; ok {
-		delete(s.subscribersMap, key)
-		n := len(s.subscribers)
-		for i, sub := range s.subscribers {
-			if sub.keyed && sub.key == key {
-				// Swap with last and remove last (swap-remove, avoids allocation)
-				s.subscribers[i] = s.subscribers[n-1]
-				s.subscribers = s.subscribers[:n-1]
-				break
-			}
-		}
-		return len(s.subscribers)
+	if _, ok := s.subscribersMap[key]; !ok {
+		return -1
 	}
-	return -1
+	delete(s.subscribersMap, key)
+
+	old := s.load()
+	n := len(old)
+	// Copy-on-write: build a fresh slice, then swap-remove within the copy so the
+	// previously published slice (which readers may still be iterating) is untouched.
+	dup := make([]keyedListener[T], n, cap(old))
+	copy(dup, old)
+	for i := range dup {
+		if dup[i].keyed && dup[i].key == key {
+			dup[i] = dup[n-1]
+			dup = dup[:n-1]
+			break
+		}
+	}
+	s.subs.Store(&dup)
+	return len(dup)
 }
 
 // Reset removes all subscribers from the signal, effectively clearing the listener list.
@@ -237,10 +314,11 @@ func (s *BaseSignal[T]) RemoveListener(key string) int {
 //	signal.Reset() // Removes all listeners
 //	fmt.Println("Number of subscribers after resetting:", signal.Len())
 func (s *BaseSignal[T]) Reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
-	s.subscribers = make([]keyedListener[T], 0)
+	empty := make([]keyedListener[T], 0)
+	s.subs.Store(&empty)
 	s.subscribersMap = make(map[string]struct{})
 }
 
@@ -248,36 +326,21 @@ func (s *BaseSignal[T]) Reset() {
 // This method must be overridden by derived types (e.g., SyncSignal, AsyncSignal) to
 // implement the specific emission strategy (synchronous vs asynchronous).
 //
-// Derived types should acquire a read lock, copy the subscriber list, and invoke
-// each listener according to their execution model.
-//
-// Example:
-//
-//	type MyDerivedSignal[T any] struct {
-//		BaseSignal[T]
-//		// Additional fields or methods specific to MyDerivedSignal
-//	}
-//
-//	func (s *MyDerivedSignal[T]) Emit(ctx context.Context, payload T) {
-//		// Custom implementation for emitting the signal
-//	}
+// Derived types should obtain the current subscriber slice with a single atomic load
+// (see load) and iterate it directly according to their execution model.
 func (s *BaseSignal[T]) Emit(ctx context.Context, payload T) {
 	panic("implement me in derived type")
 }
 
 // Len returns the current number of registered subscribers.
-// This method is safe for concurrent use.
+// This method is safe for concurrent use and lock-free.
 func (s *BaseSignal[T]) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.subscribers)
+	return len(s.load())
 }
 
 // IsEmpty returns true if the signal has no registered subscribers.
 // This is a convenience method equivalent to checking if Len() == 0.
-// This method is safe for concurrent use.
+// This method is safe for concurrent use and lock-free.
 func (s *BaseSignal[T]) IsEmpty() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.subscribers) == 0
+	return len(s.load()) == 0
 }

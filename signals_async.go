@@ -135,23 +135,17 @@ func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, wg *sync.WaitG
 		return
 	}
 
-	s.baseSignal.mu.RLock()
-	subscribers := s.baseSignal.subscribers
-	if len(subscribers) == 0 {
-		s.baseSignal.mu.RUnlock()
-		return
-	}
-	snapshot := make([]keyedListener[T], len(subscribers))
-	copy(snapshot, subscribers)
-	s.baseSignal.mu.RUnlock()
-
-	for i := range snapshot {
+	// Lock-free read: a single atomic load of the immutable subscriber slice.
+	// The slice is never mutated after publication, so iterating it while a writer
+	// concurrently swaps in a new one is safe.
+	subscribers := s.baseSignal.load()
+	for i := range subscribers {
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				break
 			}
 		}
-		sub := &snapshot[i]
+		sub := &subscribers[i]
 		if sub.listener != nil {
 			listener := sub.listener
 			if wg != nil {

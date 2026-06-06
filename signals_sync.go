@@ -30,47 +30,6 @@ func (s *SyncSignal[T]) ensureBase() {
 	})
 }
 
-// AddListenerWithErr registers an error-returning listener that can report processing failures.
-// These listeners are particularly useful with TryEmit(), which can detect and return errors.
-//
-// Parameters:
-//   - listener: The error-returning callback function (must not be nil, will panic otherwise)
-//   - key: Optional unique identifier for the listener
-//
-// Returns:
-//   - The total number of subscribers after adding the listener
-//   - Returns -1 if a keyed listener with the same key already exists
-//
-// Note: When both listener and listenerErr are set, listenerErr takes precedence during TryEmit().
-func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ...string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if listener == nil {
-		panic("listener cannot be nil")
-	}
-
-	if len(key) > 0 {
-		if _, ok := s.subscribersMap[key[0]]; ok {
-			return -1
-		}
-		s.ensureCapacity(1)
-		s.subscribersMap[key[0]] = struct{}{}
-		s.subscribers = append(s.subscribers, keyedListener[T]{
-			key:         key[0],
-			keyed:       true,
-			listenerErr: listener,
-		})
-	} else {
-		s.ensureCapacity(1)
-		s.subscribers = append(s.subscribers, keyedListener[T]{
-			listenerErr: listener,
-		})
-	}
-
-	return len(s.subscribers)
-}
-
 // AddListener registers a new listener. See BaseSignal.AddListener for details.
 func (s *SyncSignal[T]) AddListener(listener SignalListener[T], key ...string) int {
 	s.ensureBase()
@@ -123,31 +82,18 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
-	s.baseSignal.mu.RLock()
-	subscribers := s.baseSignal.subscribers
-	if len(subscribers) == 0 {
-		s.baseSignal.mu.RUnlock()
-		return
-	}
-	var local [4]keyedListener[T]
-	var snapshot []keyedListener[T]
-	if len(subscribers) <= len(local) {
-		snapshot = local[:len(subscribers)]
-		copy(snapshot, subscribers)
-		s.baseSignal.mu.RUnlock()
-	} else {
-		snapshot = make([]keyedListener[T], len(subscribers))
-		copy(snapshot, subscribers)
-		s.baseSignal.mu.RUnlock()
-	}
-	for i := range snapshot {
+	// Lock-free read: a single atomic load of the immutable subscriber slice.
+	// No lock and no snapshot copy — the slice is never mutated after publication,
+	// so iterating it is safe even if a concurrent writer swaps in a new one.
+	subscribers := s.baseSignal.load()
+	for i := range subscribers {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				break
 			}
 		}
-		sub := &snapshot[i]
+		sub := &subscribers[i]
 		if sub.listenerErr != nil {
 			_ = sub.listenerErr(ctx, payload)
 			continue
@@ -194,34 +140,16 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 		}
 	}
 
-	s.baseSignal.mu.RLock()
-	subscribers := s.baseSignal.subscribers
-	if len(subscribers) == 0 {
-		s.baseSignal.mu.RUnlock()
-		if ctx != nil {
-			return ctx.Err()
-		}
-		return nil
-	}
-	var local [4]keyedListener[T]
-	var snapshot []keyedListener[T]
-	if len(subscribers) <= len(local) {
-		snapshot = local[:len(subscribers)]
-		copy(snapshot, subscribers)
-		s.baseSignal.mu.RUnlock()
-	} else {
-		snapshot = make([]keyedListener[T], len(subscribers))
-		copy(snapshot, subscribers)
-		s.baseSignal.mu.RUnlock()
-	}
-	for i := range snapshot {
+	// Lock-free read: a single atomic load of the immutable subscriber slice.
+	subscribers := s.baseSignal.load()
+	for i := range subscribers {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 		}
-		sub := &snapshot[i]
+		sub := &subscribers[i]
 		if sub.listenerErr != nil {
 			if err := sub.listenerErr(ctx, payload); err != nil {
 				return err
