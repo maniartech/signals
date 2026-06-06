@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [master, v1.4]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # go.mod requires 1.21; also exercise the latest stable release.
+        go: ["1.21", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (race)
+        run: go test ./... -race -count=1
+
+      - name: Benchmarks (smoke)
+        # Compile and run every benchmark once to ensure they stay green.
+        # Real measurement is done locally with -count and benchstat; CI only
+        # guards against benchmarks rotting, it does not gate on numbers.
+        run: go test -run '^$' -bench=. -benchmem -benchtime=1x ./...
