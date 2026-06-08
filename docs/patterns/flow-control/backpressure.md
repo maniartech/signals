@@ -62,7 +62,7 @@ from a slow consumer **propagate upstream and throttle the source**:
 
 ```go
 var Fills = signals.NewWithOptions[Trade](&signals.SignalOptions{
-    WorkerPoolSize: 16, // bound concurrency (optional; caps in-flight ledger writes)
+    MaxConcurrent: 16, // bound concurrency (optional; caps in-flight ledger writes)
 })
 Fills.AddListener(writeToLedger)
 
@@ -103,7 +103,7 @@ trade a ledger must make.
 ## Structure
 
 ```
-                       WorkerPoolSize = N (optional bound on in-flight handlers)
+                       MaxConcurrent = N (optional bound on in-flight handlers)
                        ┌──────────────────────────────────────────────┐
   Producer ──EmitAndWait──▶ [ run this emission's listeners ]          │
    (allowed to wait)        │      │                                  │
@@ -128,7 +128,7 @@ trade a ledger must make.
 |-------------|----------------|
 | **Producer (Emitter)** | Calls a waiting emit variant; **agrees to be slowed** |
 | **Signal** | Blocks the producer until a slot is free / the work completes |
-| **Concurrency bound** | `WorkerPoolSize` (optional) — caps in-flight handlers; with `EmitAndWait` the producer already waits per emission |
+| **Concurrency bound** | `MaxConcurrent` (optional) — caps in-flight handlers; with `EmitAndWait` the producer already waits per emission |
 | **Wait path** | `EmitAndWait` / `EmitAndWaitErr` (v1.4) — the caller waits for completion; the wait *is* the backpressure |
 | **Overflow policy** (🔭 post-v1.4) | `OverflowBlock` — would make a saturated bounded `Emit` wait instead of park/drop. NOT in v1.4 |
 | **Listener** | Processes events durably (e.g. writes the ledger); its speed sets the pace |
@@ -139,7 +139,7 @@ trade a ledger must make.
 1. The producer calls `EmitAndWait(ctx, payload)` / `EmitAndWaitErr(ctx, payload)` (or,
    🔭 post-v1.4, a bounded `Emit` under `OverflowBlock`) and **agrees that this call may
    block**.
-2. The signal runs the listeners concurrently, up to the `WorkerPoolSize` bound.
+2. The signal runs the listeners concurrently, up to the `MaxConcurrent` bound.
 3. **The producer is parked** until all listeners for this emission complete (under
    `EmitAndWait`/`EmitAndWaitErr`) — or, under the 🔭 post-v1.4 `OverflowBlock` policy,
    until a slot frees up. Either way the producer does not proceed.
@@ -158,7 +158,7 @@ trade a ledger must make.
   possibly later. This is the entire point and the reason loss-intolerant data lives
   here.
 - ✓ **Bounded memory.** Because the producer waits rather than queueing ahead, work in
-  flight stays bounded by `WorkerPoolSize` — no unbounded backlog.
+  flight stays bounded by `MaxConcurrent` — no unbounded backlog.
 - ✓ **Self-pacing pipeline.** The system automatically runs at the speed of its slowest
   durable stage; no manual rate-limiting needed.
 - ✓ **Errors are observable.** `EmitAndWaitErr` returns the listeners' joined errors,
@@ -214,7 +214,7 @@ trade a ledger must make.
      `EmitAndWait` today.
 
 4. **Always pair the (post-v1.4) block policy with a bound.** `OverflowBlock` is
-   meaningful only when `WorkerPoolSize` is set — the bound is *when* to start waiting.
+   meaningful only when `MaxConcurrent` is set — the bound is *when* to start waiting.
    (`EmitAndWait` needs no bound to apply backpressure: it waits per emission
    regardless.) See [Bounded Concurrency](bounded-concurrency.md): bounding is the
    mechanism, blocking is
@@ -264,7 +264,7 @@ propagates upstream. Read this first; the practical examples then apply it.
 //    NOT from an overflow policy. `Overflow: OverflowBlock` is 🔭 post-v1.4 and is not
 //    needed here — EmitAndWaitErr already throttles the producer.
 sig := signals.NewWithOptions[Record](&signals.SignalOptions{
-    WorkerPoolSize: 8, // 🔜 v1.4 — optional: ≤ 8 in-flight handlers per emission
+    MaxConcurrent: 8, // 🔜 v1.4 — optional: ≤ 8 in-flight handlers per emission
 })
 
 // 2. LISTENER — the durable work. Its speed sets the pipeline's pace.
@@ -327,7 +327,7 @@ func Init(ledger Ledger, outbox Outbox) {
     // Backpressure comes from EmitAndWaitErr in Publish (the producer waits per fill);
     // the bound just caps in-flight ledger writes. No overflow policy needed in v1.4.
     fills = signals.NewWithOptions[Trade](&signals.SignalOptions{
-        WorkerPoolSize: 16, // 🔜 v1.4 — at most 16 ledger writes in flight
+        MaxConcurrent: 16, // 🔜 v1.4 — at most 16 ledger writes in flight
     })
 
     fills.AddListenerWithErr(func(ctx context.Context, t Trade) error {
@@ -410,7 +410,7 @@ func Init(store AuditStore) {
     // Backpressure comes from EmitAndWaitErr in Ingest (the loop waits per entry);
     // the bound just caps in-flight audit writes. No overflow policy needed in v1.4.
     events = signals.NewWithOptions[OrderEvent](&signals.SignalOptions{
-        WorkerPoolSize: 8, // 🔜 v1.4 — at most 8 audit writes in flight
+        MaxConcurrent: 8, // 🔜 v1.4 — at most 8 audit writes in flight
     })
 
     // Reentrancy caution: this listener must NOT emit back onto `events`, or it could

@@ -90,15 +90,15 @@ func New[T any]() *AsyncSignal[T] { // unbounded — safe correctness default
 
 func NewWithOptions[T any](opts *SignalOptions) *AsyncSignal[T] {
 	s := &AsyncSignal[T]{baseSignal: NewBaseSignal[T](opts)}
-	if opts != nil && opts.WorkerPoolSize > 0 {
-		s.slots = make(chan struct{}, opts.WorkerPoolSize)
+	if opts != nil && opts.MaxConcurrent > 0 {
+		s.slots = make(chan struct{}, opts.MaxConcurrent)
 	}
 	return s
 }
 
-// DefaultWorkerPoolSize is the RECOMMENDED bound (2×NumCPU) for callers who want
+// DefaultMaxConcurrent is the RECOMMENDED bound (2×NumCPU) for callers who want
 // bounding without choosing a number. NOT auto-applied — unset stays unbounded.
-func DefaultWorkerPoolSize() int { return 2 * runtime.NumCPU() }
+func DefaultMaxConcurrent() int { return 2 * runtime.NumCPU() }
 
 func recoverToPanicHandler() {
 	if r := recover(); r != nil {
@@ -115,16 +115,21 @@ func recoverToPanicHandler() {
 
 - **A1. Mechanism: counting semaphore** (`slots chan struct{}`), not a persistent
   worker pool. No background workers ⇒ **no `Close()`, no lifecycle, GC-friendly.**
+  **Naming (resolved):** the option is `SignalOptions.MaxConcurrent` (+ helper
+  `DefaultMaxConcurrent()` = 2×NumCPU). `WorkerPoolSize` was rejected — "pool" implies
+  persistent workers and a `Close()` lifecycle that this design deliberately does not have;
+  `MaxConcurrent` states the actual contract ("at most N handlers at once"). Chosen before
+  the API is built/frozen, so the rename costs nothing.
 - **A2. No drop by default.** When the bound is hit, excess dispatch **parks**
   (cheaply) until a slot frees; nothing is dropped and the caller is never blocked
   (the parking is in the background `go dispatch()` goroutine). Explicit drop/error
   overflow policies may be added later as an opt-in, not in v1.4.
 - **A3. `EmitAndWait`/`EmitAndWaitErr` obey the same bound** (they share `dispatch`).
 - **A4. Default is UNBOUNDED** (`New()` ⇒ `slots == nil`). Bounding is an informed
-  opt-in via `WorkerPoolSize > 0`; `DefaultWorkerPoolSize()` (2×NumCPU) is the
+  opt-in via `MaxConcurrent > 0`; `DefaultMaxConcurrent()` (2×NumCPU) is the
   recommended value but is **not** applied automatically.
 - **A5. Educate, don't silently protect.** Two risks are documented loudly next to
-  `WorkerPoolSize` rather than defaulted away:
+  `MaxConcurrent` rather than defaulted away:
   1. **Starvation:** a bound can starve *long-running* listeners — only N run, the
      rest never start. (This is the decisive reason the default is unbounded.)
   2. **Reentrancy/self-deadlock:** a handler that `EmitAndWait`s on its *own*
@@ -153,7 +158,7 @@ func recoverToPanicHandler() {
   on the hot path (today the caller itself loops and spawns N).
 - **Per emit total:** 1 dispatcher + 1 goroutine per handler. Handlers are
   **independent and concurrent** (this is real async, not sequential).
-- **With a pool:** at most `WorkerPoolSize` handler goroutines run concurrently;
+- **With a pool:** at most `MaxConcurrent` handler goroutines run concurrently;
   the rest park.
 
 ## Consequences & caveats (to document, not hide)

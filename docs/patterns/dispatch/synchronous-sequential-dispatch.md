@@ -172,7 +172,7 @@ there is no race on the shared `*Order`.
 1. **Construct with `NewSync[T]()`** (✅) — or `NewSyncWithOptions[T]` (✅) if you need
    a custom `InitialCapacity`/`GrowthFunc`. The zero value `var s signals.SyncSignal[T]`
    is also usable directly (lazy init). The concurrency-bounding options
-   (`WorkerPoolSize`, `Overflow`) are meaningless for a sync signal — there is no
+   (`MaxConcurrent`, `Overflow`) are meaningless for a sync signal — there is no
    concurrency to bound.
 
 2. **Order is registration order — but mind removals.** Listeners fire in the order

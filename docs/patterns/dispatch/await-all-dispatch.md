@@ -183,7 +183,7 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
 1. **Construct with `New[T]()`** (✅) — the same `AsyncSignal` used for fire-and-forget;
    the dispatch mode is chosen by *which method you call*, not by a different
    constructor. `NewWithOptions[T]` (✅) adds `InitialCapacity`/`GrowthFunc` and, 🔜 v1.4,
-   `WorkerPoolSize`.
+   `MaxConcurrent`.
 
 2. **Always pass a context with a deadline.** Because the caller waits for the slowest
    listener, a single hung listener blocks `EmitAndWait` indefinitely unless bounded.
@@ -199,7 +199,7 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
    as "fire-and-join," not "fire-and-verify."
 
 4. **Bound the fan-out for high-fan-in signals.** A signal with many listeners spawns many
-   goroutines per emit. For large listener counts or high emit rates, set `WorkerPoolSize`
+   goroutines per emit. For large listener counts or high emit rates, set `MaxConcurrent`
    (🔜 v1.4) so the concurrent fan-out is capped — see
    [Bounded Concurrency](../flow-control/bounded-concurrency.md). The completion guarantee
    still holds; the work is just throttled through the pool.
@@ -406,7 +406,7 @@ canceled by the signal, so the drain needs its own bounded budget.
 - **`EmitAndWaitErr` (error-aggregating).** Same concurrent scatter-join, but returns every
   listener's error joined with `errors.Join` so you can fail the operation when any listener
   fails — [Result Aggregation](../reliability/result-aggregation.md).
-- **Bounded fan-out.** Cap the concurrent listeners with `WorkerPoolSize` (🔜 v1.4) for
+- **Bounded fan-out.** Cap the concurrent listeners with `MaxConcurrent` (🔜 v1.4) for
   high-fan-in signals while keeping the completion guarantee —
   [Bounded Concurrency](../flow-control/bounded-concurrency.md).
 - **Deadline-bounded barrier.** Wrap with `context.WithTimeout` so the join releases on a

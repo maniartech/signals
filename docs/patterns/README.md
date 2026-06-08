@@ -76,7 +76,7 @@ limit (documented honestly; it is a *load* condition with visible symptoms).
 The levers v1.4 actually ships:
 
 - **`Emit`** — fire-and-forget; one dispatcher goroutine, returns immediately. Handlers
-  run concurrently. A `WorkerPoolSize` bound caps *concurrent* handlers; excess **parks**
+  run concurrently. A `MaxConcurrent` bound caps *concurrent* handlers; excess **parks**
   (no drop, no caller-block). Unbounded by default (a bound can starve long-running
   listeners — see [Bounded Concurrency](flow-control/bounded-concurrency.md)).
 - **`EmitAndWait` / `EmitAndWaitErr`** — allowed to make the caller wait ⇒ the natural
@@ -104,9 +104,9 @@ beyond this list.
 > **Async dispatch model (ADR 0001, authoritative).** `AsyncSignal.Emit` spawns **one
 > dispatcher goroutine** and returns immediately (fire-and-forget, no asterisk); each
 > handler then runs **independently/concurrently** in its own goroutine. A configured
-> `WorkerPoolSize` bounds how many handlers run **at once** via a counting semaphore;
+> `MaxConcurrent` bounds how many handlers run **at once** via a counting semaphore;
 > excess handlers **park** (cheaply) until a slot frees — they are **not dropped** and
-> the caller is **never blocked**. With no `WorkerPoolSize`, dispatch is **unbounded**
+> the caller is **never blocked**. With no `MaxConcurrent`, dispatch is **unbounded**
 > (the safe default — a bound can starve long-running listeners). Explicit
 > drop/block/error overflow *policies* are **🔭 post-v1.4**, not shipped in v1.4.
 
@@ -116,17 +116,17 @@ signals.New[T]() *AsyncSignal[T]                               // ✅ async sign
 signals.NewSync[T]() *SyncSignal[T]                            // ✅ sync signal
 signals.NewWithOptions[T](*SignalOptions) *AsyncSignal[T]      // ✅
 signals.NewSyncWithOptions[T](*SignalOptions) *SyncSignal[T]   // ✅
-signals.DefaultWorkerPoolSize() int                           // 🔜 v1.4 — recommended bound = 2*NumCPU
+signals.DefaultMaxConcurrent() int                           // 🔜 v1.4 — recommended bound = 2*NumCPU
 
 type SignalOptions struct {
     InitialCapacity int             // ✅
     GrowthFunc      func(int) int   // ✅
-    WorkerPoolSize  int             // 🔜 v1.4 — bounds CONCURRENT handlers; 0/unset = unbounded
+    MaxConcurrent  int             // 🔜 v1.4 — bounds CONCURRENT handlers; 0/unset = unbounded
     // Overflow OverflowPolicy      // 🔭 post-v1.4 — explicit drop/block/error policy (NOT in v1.4)
 }
 
 // 🔭 post-v1.4 — NOT shipped in v1.4. In v1.4, excess handlers park (no drop, no
-// caller-block) when a WorkerPoolSize bound is hit; there is no overflow policy knob yet.
+// caller-block) when a MaxConcurrent bound is hit; there is no overflow policy knob yet.
 // type OverflowPolicy int
 // const ( OverflowDropNewest OverflowPolicy = iota; OverflowBlock; OverflowError )
 ```

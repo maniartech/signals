@@ -110,7 +110,7 @@ That decoupling is not free, and the cost is the whole point of the next section
                     Dispatcher goroutine (background)
                     ┌───────────────────────────────────────────┐
                     │  for each listener:                       │
-                    │    (if WorkerPoolSize set) acquire a slot  │
+                    │    (if MaxConcurrent set) acquire a slot  │
                     │       — PARKS here when all slots are busy │
                     │       (cheap; nothing dropped; caller is   │
                     │        already gone, so never blocked)     │
@@ -130,7 +130,7 @@ That decoupling is not free, and the cost is the whole point of the next section
 | Participant | Responsibility |
 |-------------|----------------|
 | **Caller (Emitter)** | Calls `Emit`; on the hot path; spawns **one** dispatcher goroutine then returns — **never blocks**, **never observes** listener results |
-| **Dispatcher goroutine** | The single goroutine `Emit` spawns; loops over listeners, acquires a concurrency slot if `WorkerPoolSize` is set (**parking** when none free), and fans each listener onto its own goroutine |
+| **Dispatcher goroutine** | The single goroutine `Emit` spawns; loops over listeners, acquires a concurrency slot if `MaxConcurrent` is set (**parking** when none free), and fans each listener onto its own goroutine |
 | **AsyncSignal** | Holds the listeners and the optional concurrency semaphore; runs the dispatch loop in the background |
 | **Context** | Checked once at emit time; if already canceled, **no** listener runs |
 | **Listener** | Runs concurrently, in arbitrary order; its return value/error is discarded by this path |
@@ -143,7 +143,7 @@ That decoupling is not free, and the cost is the whole point of the next section
    or finish. (The `ctx` cancel check happens inside the dispatcher: if `ctx.Err() != nil`,
    **no listener runs** — canceled-context-skips-all.)
 2. The dispatcher goroutine loops over the listeners and **fans each one onto its own
-   goroutine**. If a `WorkerPoolSize` bound is configured, it first acquires a slot from a
+   goroutine**. If a `MaxConcurrent` bound is configured, it first acquires a slot from a
    counting semaphore; when all slots are busy the dispatcher **parks cheaply** until one
    frees — nothing is dropped, and the caller (already returned) is never blocked.
 3. The listeners execute **concurrently** with each other and with the caller, in **no
@@ -176,9 +176,9 @@ That decoupling is not free, and the cost is the whole point of the next section
   [Async Error Routing](../reliability/async-error-routing.md).
 - ✗ **No ordering.** Listeners run in arbitrary order; never build logic that assumes one
   ran before another.
-- ✗ **Unbounded backlog under sustained overload.** With no `WorkerPoolSize`, a fresh
+- ✗ **Unbounded backlog under sustained overload.** With no `MaxConcurrent`, a fresh
   goroutine per listener per emit means that if listeners slow down while the producer does
-  not, live goroutines and memory grow without limit. A `WorkerPoolSize` bound caps how
+  not, live goroutines and memory grow without limit. A `MaxConcurrent` bound caps how
   many handlers run *at once*, but the excess does not vanish — parked dispatch work
   accumulates (cheaply: ~2 KB, idle) without a hard ceiling. Either way the backlog can
   grow under a *sustained* producer-faster-than-consumer condition. This is not a flaw to
@@ -188,7 +188,7 @@ That decoupling is not free, and the cost is the whole point of the next section
 > promised that the **producer never waits**. By the catalog's central law, a path that
 > never makes the producer wait *cannot* also guarantee bounded memory *and* zero loss
 > under sustained overload. **v1.4 keeps the never-wait promise AND keeps zero loss** —
-> when a `WorkerPoolSize` bound is hit, excess handlers **park** (cheaply) until a slot
+> when a `MaxConcurrent` bound is hit, excess handlers **park** (cheaply) until a slot
 > frees; **nothing is dropped and the caller is never blocked**. The corner v1.4 gives up
 > is therefore **bounded memory**: under sustained overload the parked backlog can grow
 > without a hard limit (a *load* condition with visible symptoms — growing goroutine /
@@ -204,21 +204,21 @@ That decoupling is not free, and the cost is the whole point of the next section
 ## Implementation
 
 1. **Construct with `New[T]()`** (✅) — or `NewWithOptions[T]` (✅) to set
-   `InitialCapacity`/`GrowthFunc`, and (🔜 v1.4) `WorkerPoolSize` to bound the
+   `InitialCapacity`/`GrowthFunc`, and (🔜 v1.4) `MaxConcurrent` to bound the
    concurrency. The zero value `var s signals.AsyncSignal[T]` is usable directly (lazy
    `sync.Once` init). `New[T]()` is **unbounded** — the safe correctness default.
 
 2. **Bound the concurrency deliberately, not reflexively.** The unbounded default is the
    correct choice for most signals, including long-running listeners (a bound can *starve*
-   them — only `WorkerPoolSize` run, the rest never start). For a high-rate stream of
-   *short* listeners where you want a ceiling on concurrent execution, set `WorkerPoolSize`
-   (🔜 v1.4); `DefaultWorkerPoolSize()` (🔜 v1.4, `2*NumCPU`) is the recommended value but
+   them — only `MaxConcurrent` run, the rest never start). For a high-rate stream of
+   *short* listeners where you want a ceiling on concurrent execution, set `MaxConcurrent`
+   (🔜 v1.4); `DefaultMaxConcurrent()` (🔜 v1.4, `2*NumCPU`) is the recommended value but
    is **not** applied automatically. When the bound is hit, excess handlers **park** until
    a slot frees — they are **not dropped** and the caller is **never blocked**. See
    [Bounded Concurrency](../flow-control/bounded-concurrency.md) for the starvation and
    self-deadlock caveats.
 
-3. **There is no overflow-policy knob in v1.4.** When a `WorkerPoolSize` bound is
+3. **There is no overflow-policy knob in v1.4.** When a `MaxConcurrent` bound is
    saturated, the dispatcher **parks** until a slot frees — that is the only v1.4 behavior.
    Explicit overflow *policies* (`OverflowDropNewest` to shed and count, `OverflowBlock` to
    backpressure, `OverflowError` to report) are **🔭 post-v1.4** — designed but deliberately
@@ -322,7 +322,7 @@ type PageView struct {
 // Bounded async signal: high-rate, short listeners; the bound caps CONCURRENT handlers.
 // Excess handlers park (no drop, no caller-block) until a slot frees.
 var PageViewed = signals.NewWithOptions[PageView](&signals.SignalOptions{
-    WorkerPoolSize: 8 * runtime.NumCPU(), // 🔜 v1.4 — ceiling on CONCURRENT listeners
+    MaxConcurrent: 8 * runtime.NumCPU(), // 🔜 v1.4 — ceiling on CONCURRENT listeners
 })
 
 func init() {
@@ -396,7 +396,7 @@ type Invalidation struct {
 
 // Bounded async signal: busts are best-effort (TTL backstops a delayed one).
 var Invalidated = signals.NewWithOptions[Invalidation](&signals.SignalOptions{
-    WorkerPoolSize: 4 * runtime.NumCPU(), // 🔜 v1.4 — ceiling on CONCURRENT busts
+    MaxConcurrent: 4 * runtime.NumCPU(), // 🔜 v1.4 — ceiling on CONCURRENT busts
 })
 
 func init() {
@@ -433,7 +433,7 @@ meantime — which is exactly what makes this a fire-and-forget fit rather than 
 
 ## Variations
 
-- **Bounded fire-and-forget.** Same non-blocking `Emit`, but with `WorkerPoolSize`
+- **Bounded fire-and-forget.** Same non-blocking `Emit`, but with `MaxConcurrent`
   (🔜 v1.4) capping *concurrent* handlers; excess parks (no drop) — see
   [Bounded Concurrency](../flow-control/bounded-concurrency.md). Use deliberately:
   unbounded is the safe default, and a bound can starve long-running listeners.
@@ -473,7 +473,7 @@ meantime — which is exactly what makes this a fire-and-forget fit rather than 
   explicit drop/block/error overflow policy. **Not** what `Emit` does by default in v1.4
   (v1.4 parks excess rather than dropping it).
 - **[Bounded Concurrency](../flow-control/bounded-concurrency.md)** — bound the *concurrent*
-  handler count with `WorkerPoolSize` so fire-and-forget caps execution; covers the
+  handler count with `MaxConcurrent` so fire-and-forget caps execution; covers the
   starvation and self-deadlock caveats that make unbounded the default.
 - **[Backpressure](../flow-control/backpressure.md)** — the alternative for
   loss-intolerant or throughput-sensitive data: slow the producer (via `EmitAndWait`)

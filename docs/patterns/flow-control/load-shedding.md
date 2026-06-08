@@ -9,7 +9,7 @@
 > ## ⚠️ This pattern describes DEFERRED, opt-in future behavior — NOT v1.4 default
 > **In v1.4, `Emit` does not drop anything.** Per
 > [ADR 0001](../../design/0001-async-dispatch-and-error-model.md), when a
-> `WorkerPoolSize` bound is saturated, excess handler work **parks** cheaply until a
+> `MaxConcurrent` bound is saturated, excess handler work **parks** cheaply until a
 > slot frees — it is **never dropped**, and the caller is **never blocked**. There is
 > no drop-and-count overflow behavior in v1.4, and no default bound at all (dispatch is
 > unbounded by default).
@@ -67,7 +67,7 @@ increment a counter** so operators can see exactly how much was shed.
 // 🔭 post-v1.4 (H1 hard-bound mode). NOT available in v1.4 — shown as the intended
 // future shedding API. In v1.4 the same bound would PARK the excess (never drop).
 var Telemetry = signals.NewWithOptions[Metric](&signals.SignalOptions{
-    WorkerPoolSize: 64,                         // at most 64 ships in flight
+    MaxConcurrent: 64,                         // at most 64 ships in flight
     Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4 — shed the excess
 })
 Telemetry.AddListener(shipToCollector)
@@ -110,7 +110,7 @@ ceiling for loss-tolerant data before H1 ships, slow the producer with
 ## Structure
 
 ```
-                         WorkerPoolSize = N (the bound)
+                         MaxConcurrent = N (the bound)
                          ┌───────────────────────────┐
   Producer ──Emit──▶  [ admission check ]            │
    (fast)                │      │                     │
@@ -134,7 +134,7 @@ ceiling for loss-tolerant data before H1 ships, slow the producer with
 |-------------|----------------|
 | **Producer (Emitter)** | Calls `Emit`; on the hot path; must not block |
 | **Signal** | Performs the admission check against the concurrency bound |
-| **Concurrency bound** | `WorkerPoolSize` — the maximum number of listeners running at once |
+| **Concurrency bound** | `MaxConcurrent` — the maximum number of listeners running at once |
 | **Overflow policy** (🔭 post-v1.4) | Decides the fate of an emission that can't be admitted (`OverflowDropNewest` for this pattern). NOT in v1.4 — a v1.4 bound parks instead |
 | **Overflow hook** (🔭 post-v1.4) | `OnOverflow(func(dropped T))` — observes/counts every shed event. NOT in v1.4 |
 | **Listener** | Processes admitted events; oblivious to shedding |
@@ -145,7 +145,7 @@ ceiling for loss-tolerant data before H1 ships, slow the producer with
    contract of fire-and-forget is preserved no matter what the admission check
    decides.
 2. The signal checks whether an admission slot is available within the
-   `WorkerPoolSize` bound.
+   `MaxConcurrent` bound.
 3. **If a slot is free:** the listener work is admitted and runs (concurrently with
    up to `N-1` others).
 4. **If saturated:** the `Overflow` policy is consulted. Under `OverflowDropNewest`
@@ -172,7 +172,7 @@ ceiling for loss-tolerant data before H1 ships, slow the producer with
 
 - ✗ **Events are lost** — by design. Only acceptable for loss-tolerant data.
 - ✗ **No delivery guarantee** for any individual event under overload.
-- ✗ **Tuning required.** `WorkerPoolSize` that is too small sheds too eagerly; too
+- ✗ **Tuning required.** `MaxConcurrent` that is too small sheds too eagerly; too
   large weakens the protection. Sizing needs thought (see Implementation).
 
 > **Trilemma corner sacrificed:** Load Shedding keeps *bounded memory* and a
@@ -184,7 +184,7 @@ ceiling for loss-tolerant data before H1 ships, slow the producer with
 1. **Shedding presupposes a bound.** Load Shedding is the *policy* that runs when the
    [Bounded Concurrency](bounded-concurrency.md) limit is hit. Without a bound there
    is nothing to shed — and nothing to stop the meltdown. Always set
-   `WorkerPoolSize`.
+   `MaxConcurrent`.
 
 2. **Choose the drop direction deliberately (🔭 post-v1.4).** `OverflowDropNewest`
    discards the *incoming* event (simplest, lowest latency, keeps already-queued work).
@@ -202,7 +202,7 @@ ceiling for loss-tolerant data before H1 ships, slow the producer with
    Increment an atomic counter or push to a buffered metrics client; never do I/O or
    acquire contended locks inside it, or you reintroduce the very stall you avoided.
 
-5. **Size `WorkerPoolSize` to the *downstream*, not the producer.** For IO-bound
+5. **Size `MaxConcurrent` to the *downstream*, not the producer.** For IO-bound
    listeners, match the capacity of what they talk to (e.g. the collector's max
    concurrent connections). For CPU-bound listeners, `runtime.NumCPU()` to
    `2*runtime.NumCPU()`. The bound is "how much concurrency my dependencies can
@@ -233,7 +233,7 @@ practical examples then apply it to real problems.
 
 // 1. SIGNAL with a concurrency BOUND and an overflow POLICY.
 sig := signals.NewWithOptions[Event](&signals.SignalOptions{
-    WorkerPoolSize: 4,                          // the bound: ≤ 4 listeners at once
+    MaxConcurrent: 4,                          // the bound: ≤ 4 listeners at once
     Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4 — the policy: shed the excess
 })
 
@@ -287,7 +287,7 @@ var (
 func Init(collector Collector) {
     // Bound concurrency to what the collector can absorb, and shed the rest.
     stream = signals.NewWithOptions[Metric](&signals.SignalOptions{
-        WorkerPoolSize: 4 * runtime.NumCPU(),       // IO-bound: a few per core
+        MaxConcurrent: 4 * runtime.NumCPU(),       // IO-bound: a few per core
         Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4
     })
 
@@ -354,7 +354,7 @@ var (
     dropped atomic.Uint64
     // 🔭 post-v1.4 (H1). NOT in v1.4 — the v1.4 bound parks excess entries, not drops.
     logs = signals.NewWithOptions[Entry](&signals.SignalOptions{
-        WorkerPoolSize: 2 * runtime.NumCPU(),
+        MaxConcurrent: 2 * runtime.NumCPU(),
         Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4
     })
 )

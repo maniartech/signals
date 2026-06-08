@@ -197,7 +197,7 @@ or retry **just that channel**.
    thread-safe.
 
 7. **Concurrency may be bounded.** When the signal is configured with a
-   `WorkerPoolSize` (🔜 v1.4, see [Bounded Concurrency](../flow-control/bounded-concurrency.md)),
+   `MaxConcurrent` (🔜 v1.4, see [Bounded Concurrency](../flow-control/bounded-concurrency.md)),
    listeners still all run and are still all awaited — the pool just limits how many run
    at the same instant. Aggregation semantics are unchanged; only the scheduling is.
 
@@ -429,7 +429,7 @@ that missed — never to the ones that already succeeded.
 - **Categorize before reacting.** Use `errors.As` to split transient vs. permanent
   failures in the joined error: retry the transient targets, alert a human on the
   permanent ones.
-- **Bounded fan-out.** Combine with `WorkerPoolSize`
+- **Bounded fan-out.** Combine with `MaxConcurrent`
   ([Bounded Concurrency](../flow-control/bounded-concurrency.md)) when there are many
   listeners, so the concurrent fan-out cannot itself overwhelm the machine.
 

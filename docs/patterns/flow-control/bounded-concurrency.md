@@ -2,7 +2,7 @@
 
 **Family:** Flow-Control
 · **Also Known As:** Worker Limiting, Concurrency Cap, Semaphore Dispatch
-· **Status:** `SignalOptions.WorkerPoolSize` and `DefaultWorkerPoolSize()` are 🔜 v1.4.
+· **Status:** `SignalOptions.MaxConcurrent` and `DefaultMaxConcurrent()` are 🔜 v1.4.
   A hard backlog ceiling (overflow mode H1) is 🔭 post-v1.4.
 
 ## Intent
@@ -13,7 +13,7 @@ process. The cap turns "every handler runs immediately, no matter how many" into
 most *N* handlers run at any instant; the excess **parks** cheaply until a slot
 frees."
 
-> **What a bound does and does not do (ADR 0001).** `WorkerPoolSize` is a counting
+> **What a bound does and does not do (ADR 0001).** `MaxConcurrent` is a counting
 > semaphore that bounds *concurrent* handler execution. When all *N* slots are held,
 > excess handler work **parks** (cheaply, ~2 KB idle) until a slot frees — it is
 > **never dropped** and the caller is **never blocked** (`Emit` already returned; the
@@ -58,7 +58,7 @@ fixes this by introducing a hard ceiling on simultaneous invocations:
 
 ```go
 var Orders = signals.NewWithOptions[Order](&signals.SignalOptions{
-    WorkerPoolSize: 50, // never more than 50 writes in flight — matches the DB pool
+    MaxConcurrent: 50, // never more than 50 writes in flight — matches the DB pool
 })
 Orders.AddListener(persistOrder)
 
@@ -79,7 +79,7 @@ decision; bounding the concurrency is the foundation that makes either choice po
 
 > **The decisive trade-off: a bound can *starve* long-running listeners.** This is the
 > reason v1.4's default is **unbounded**, not a default bound. If you set
-> `WorkerPoolSize: N` and your listeners are long-running (a streaming RPC, a tail
+> `MaxConcurrent: N` and your listeners are long-running (a streaming RPC, a tail
 > follower, a subscription that lives for minutes), the first *N* handlers can hold all
 > the slots indefinitely and the remaining listeners **never start** — they park
 > forever behind handlers that never return. An unbounded default guarantees every
@@ -111,7 +111,7 @@ decision; bounding the concurrency is the foundation that makes either choice po
 ## Structure
 
 ```
-                       WorkerPoolSize = N  (counting semaphore, N slots)
+                       MaxConcurrent = N  (counting semaphore, N slots)
                        ┌──────────────────────────────────────────┐
   Producer ──Emit──▶  (one dispatcher goroutine, in the background)│
    (returns at once)   │                                          │
@@ -138,7 +138,7 @@ decision; bounding the concurrency is the foundation that makes either choice po
 |-------------|----------------|
 | **Producer (Emitter)** | Calls an emit variant to publish a payload |
 | **Signal** | Acquires a semaphore slot before spawning each listener goroutine |
-| **Counting semaphore** | Holds `WorkerPoolSize` slots; the hard ceiling on concurrency |
+| **Counting semaphore** | Holds `MaxConcurrent` slots; the hard ceiling on concurrency |
 | **Listener goroutine** | Spawned per admitted invocation; releases its slot when it returns |
 | **Parked dispatch** | When all slots are held, excess handler spawns park (cheaply) in the background dispatcher until a slot frees — not dropped, caller not blocked |
 | **Overflow policy** (🔭 post-v1.4) | Would decide the fate of an emission when the semaphore is saturated (drop vs. block) instead of parking. NOT in v1.4 |
@@ -148,7 +148,7 @@ decision; bounding the concurrency is the foundation that makes either choice po
 
 1. The producer calls an emit variant with a payload.
 2. For each registered listener, the signal attempts to **acquire one slot** from the
-   counting semaphore (capacity `WorkerPoolSize`).
+   counting semaphore (capacity `MaxConcurrent`).
 3. **If a slot is acquired:** the signal spawns a goroutine that runs the listener and
    **releases the slot when the listener returns** (whether it completes, errors, or
    panics — release is guaranteed).
@@ -216,32 +216,32 @@ decision; bounding the concurrency is the foundation that makes either choice po
    tear them down.
 
 4. **Effective concurrency is `min(N, len(listeners))`, automatically.** If you set
-   `WorkerPoolSize: 64` but register only 3 listeners, you get at most 3 concurrent
+   `MaxConcurrent: 64` but register only 3 listeners, you get at most 3 concurrent
    invocations per emit — the bound never forces extra concurrency, it only caps it.
 
-5. **The default is UNBOUNDED, by design.** When `WorkerPoolSize` is left zero/unset,
+5. **The default is UNBOUNDED, by design.** When `MaxConcurrent` is left zero/unset,
    dispatch is **unbounded** — one goroutine per handler, none parked. v1.4 deliberately
    does **not** apply a default bound, because any bound can *starve long-running
    listeners* (note 2 above and the Liabilities): a silent default could make some
    listeners never run. If you want bounding without choosing a number, opt in with
-   `DefaultWorkerPoolSize()` (🔜 v1.4 — returns `2 * runtime.NumCPU()`), the
+   `DefaultMaxConcurrent()` (🔜 v1.4 — returns `2 * runtime.NumCPU()`), the
    *recommended* value; it is recommended, not automatic.
 
    ```go
    // Opt in to the recommended bound explicitly — unset stays unbounded.
    sig := signals.NewWithOptions[T](&signals.SignalOptions{
-       WorkerPoolSize: signals.DefaultWorkerPoolSize(), // 🔜 v1.4 — = 2*NumCPU
+       MaxConcurrent: signals.DefaultMaxConcurrent(), // 🔜 v1.4 — = 2*NumCPU
    })
    ```
 
-6. **Pool size ≠ subscriber count — size to the *bottleneck*, not the listener count.**
+6. **`MaxConcurrent` ≠ subscriber count — size to the *bottleneck*, not the listener count.**
    The bound is "how much concurrency my dependencies can absorb," never "how many
    listeners (or events) there are." A worked example: suppose 100 listeners all write
    to a database fronted by **20** connections.
-   - Set `WorkerPoolSize: 20` (match the DB pool) → at most 20 writes contend for 20
+   - Set `MaxConcurrent: 20` (match the DB pool) → at most 20 writes contend for 20
      connections; the other 80 handler spawns **park** until a connection frees. The
      bound *is* the protection.
-   - Set `WorkerPoolSize: 100` (= subscriber count) → all 100 run at once and 80 of them
+   - Set `MaxConcurrent: 100` (= subscriber count) → all 100 run at once and 80 of them
      immediately pile up *inside* the 20-connection pool's wait queue. A bound equal to
      the subscriber count is **no cap at all** — you are back to unbounded fan-out onto
      the real bottleneck. The whole point of the bound is to be *smaller* than the work
@@ -285,14 +285,14 @@ decision; bounding the concurrency is the foundation that makes either choice po
 A minimal skeleton that maps one-to-one onto the **Participants** and the
 **Structure** diagram above — the *Producer*, the *Signal* with its *counting
 semaphore* bound, and the *Listener*. The bound is a counting semaphore that gates
-goroutine *spawning*: at most `WorkerPoolSize` listener goroutines are alive at any
+goroutine *spawning*: at most `MaxConcurrent` listener goroutines are alive at any
 instant, and when idle the signal holds **zero** goroutines (no pool, no `Close()`).
 Read this first to see the mechanics; the practical examples then apply it.
 
 ```go
 // 1. SIGNAL with a concurrency BOUND (the counting semaphore: N slots).
 sig := signals.NewWithOptions[Job](&signals.SignalOptions{
-    WorkerPoolSize: 8, // 🔜 v1.4 — the bound: ≤ 8 listener goroutines at once
+    MaxConcurrent: 8, // 🔜 v1.4 — the bound: ≤ 8 listener goroutines at once
 })
 
 // 2. LISTENER — the admitted work. Oblivious to the bound.
@@ -353,7 +353,7 @@ func Init(db *sql.DB) {
     // Bound listener concurrency to exactly what the pool can serve.
     // No Close() needed: when idle, this signal holds zero goroutines and is GC-able.
     persisted = signals.NewWithOptions[Order](&signals.SignalOptions{
-        WorkerPoolSize: dbMaxConns, // 🔜 v1.4 — at most 50 writes in flight
+        MaxConcurrent: dbMaxConns, // 🔜 v1.4 — at most 50 writes in flight
     })
 
     persisted.AddListener(func(ctx context.Context, o Order) {
@@ -420,7 +420,7 @@ func Init(vendor VendorClient) {
     // Match the bound to the dependency's capacity, not to the event rate.
     // No standing pool: idle between bursts, this signal holds zero goroutines.
     enriched = signals.NewWithOptions[Event](&signals.SignalOptions{
-        WorkerPoolSize: vendorMaxConcurrent, // 🔜 v1.4 — never more than 20 calls in flight
+        MaxConcurrent: vendorMaxConcurrent, // 🔜 v1.4 — never more than 20 calls in flight
     })
 
     enriched.AddListener(func(ctx context.Context, e Event) {

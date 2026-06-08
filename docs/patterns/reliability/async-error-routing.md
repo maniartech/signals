@@ -209,7 +209,7 @@ ever having to wait for it.
    since they all run per failure.
 
 8. **`OnError` is strictly for listeners that *ran and returned an error*.** It is not an
-   overload signal: in v1.4 a `WorkerPoolSize` bound makes excess handlers **park** until
+   overload signal: in v1.4 a `MaxConcurrent` bound makes excess handlers **park** until
    a slot frees (no drop, no caller-block), so nothing is shed before running. Explicit
    drop/overflow policies are **🔭 post-v1.4** (see
    [Load Shedding](../flow-control/load-shedding.md)) and out of scope here.
@@ -439,4 +439,4 @@ self-heals instead of one that silently drifts out of sync.
 - **[Load Shedding](../flow-control/load-shedding.md)** — the flow-control concern of an
   event *shed under overload before running* (an explicit drop policy is 🔭 post-v1.4),
   as distinct from a listener that *ran and returned an error* (→ `OnError`). In v1.4 a
-  `WorkerPoolSize` bound parks excess handlers rather than dropping them.
+  `MaxConcurrent` bound parks excess handlers rather than dropping them.

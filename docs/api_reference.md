@@ -539,7 +539,7 @@ Optimize for high-throughput scenarios:
 func NewOptimizedEventBus(expectedListeners int) *EventBus {
     opts := &signals.SignalOptions{
         InitialCapacity: expectedListeners,
-        WorkerPoolSize:  runtime.NumCPU() * 2,
+        MaxConcurrent:  runtime.NumCPU() * 2,
         EnableMetrics:   true,
     }
 
