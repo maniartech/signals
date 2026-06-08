@@ -198,7 +198,9 @@ func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) i
 		panic("listener cannot be nil")
 	}
 	kl := keyedListener[T]{listener: listener}
-	if len(key) > 0 {
+	// An empty-string key is treated as no key (unkeyed): per the FR-9 key contract,
+	// the empty string is invisible to all key-based APIs (Keys/HasKey/RemoveListener).
+	if len(key) > 0 && key[0] != "" {
 		kl.key = key[0]
 		kl.keyed = true
 	}
@@ -247,7 +249,8 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 		panic("listener cannot be nil")
 	}
 	kl := keyedListener[T]{listenerErr: listener}
-	if len(key) > 0 {
+	// Empty-string key ⇒ treated as unkeyed (FR-9 key contract).
+	if len(key) > 0 && key[0] != "" {
 		kl.key = key[0]
 		kl.keyed = true
 	}
@@ -282,7 +285,10 @@ func (s *BaseSignal[T]) addOnce(handler SignalListener[T], key string, userKeyed
 	var fired atomic.Bool
 	k := key
 	auto := false
-	if !userKeyed {
+	// No caller key (or an empty-string key, which is unkeyed per the FR-9 contract):
+	// synthesize an internal key so the one-shot can self-remove. The internal key is
+	// hidden from Keys() and cannot collide with a caller key.
+	if !userKeyed || key == "" {
 		k = onceKeyPrefix + strconv.FormatUint(onceCounter.Add(1), 10)
 		auto = true
 	}
