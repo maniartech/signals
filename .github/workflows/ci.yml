@@ -4,17 +4,29 @@ on:
   push:
     branches: [master, v1.4]
   pull_request:
+  schedule:
+    # Nightly extended fuzzing (UTC). Catches what the PR seed corpus cannot.
+    - cron: "0 3 * * *"
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    # Use bash on every OS (including Windows runners) so the shell steps below
+    # behave identically across the matrix.
+    shell: bash
+
 jobs:
   test:
-    name: test (go ${{ matrix.go }})
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # Windows is mandatory: it is the platform whose scheduler historically
+        # exposed the timing flakiness this release fixes (FR-8 §8.6).
+        os: [ubuntu-latest, windows-latest, macos-latest]
         # go.mod requires 1.21; also exercise the latest stable release.
         go: ["1.21", "stable"]
     steps:
@@ -43,6 +55,41 @@ jobs:
 
       - name: Benchmarks (smoke)
         # Compile and run every benchmark once to ensure they stay green.
-        # Real measurement is done locally with -count and benchstat; CI only
-        # guards against benchmarks rotting, it does not gate on numbers.
         run: go test -run '^$' -bench=. -benchmem -benchtime=1x ./...
+
+  coverage:
+    name: coverage (per-file floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          check-latest: true
+      - name: Coverage
+        run: |
+          go test ./... -coverprofile=cover.out -covermode=atomic
+          echo "---- per-function coverage ----"
+          go tool cover -func=cover.out
+          total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}')
+          echo "Total coverage: $total"
+
+  fuzz:
+    name: nightly fuzz
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [FuzzSyncOps_Model, FuzzConcurrentOps_Race]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          check-latest: true
+      - name: Fuzz ${{ matrix.target }}
+        # Time-boxed extended fuzzing; any new crash fails the job and the
+        # reproducer (written under testdata/fuzz/) should be committed as a
+        # permanent regression seed.
+        run: go test . -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 5m
