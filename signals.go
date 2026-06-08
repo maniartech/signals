@@ -96,6 +96,24 @@ type Signal[T any] interface {
 	//	})
 	//	fmt.Println("Is signal empty?", signal.IsEmpty()) // Should print false
 	IsEmpty() bool
+
+	// AddOnce adds a listener that fires exactly once and then removes itself.
+	// The one-shot guarantee is concurrency-safe: even under simultaneous
+	// emissions the handler is invoked at most once. It returns the number of
+	// subscribers after adding the listener.
+	AddOnce(handler SignalListener[T]) int
+
+	// AddOnceWithKey adds a keyed one-time listener. It behaves like AddOnce but
+	// is addressable by key (e.g. to remove it before it fires) and returns -1 if
+	// a listener with the same key already exists.
+	AddOnceWithKey(handler SignalListener[T], key string) int
+
+	// Keys returns a snapshot of all caller-supplied listener keys, safe to read
+	// while other goroutines mutate the listener set. Empty-string keys are omitted.
+	Keys() []string
+
+	// HasKey reports, in O(1), whether a listener with the given key is registered.
+	HasKey(key string) bool
 }
 
 // NewWithOptions creates a new async Signal with custom allocation/growth options.

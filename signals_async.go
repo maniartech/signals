@@ -93,6 +93,30 @@ func (s *AsyncSignal[T]) IsEmpty() bool {
 	return s.baseSignal.IsEmpty()
 }
 
+// AddOnce registers a one-time listener. See BaseSignal.AddOnce for details.
+func (s *AsyncSignal[T]) AddOnce(handler SignalListener[T]) int {
+	s.ensureBase()
+	return s.baseSignal.AddOnce(handler)
+}
+
+// AddOnceWithKey registers a keyed one-time listener. See BaseSignal.AddOnceWithKey.
+func (s *AsyncSignal[T]) AddOnceWithKey(handler SignalListener[T], key string) int {
+	s.ensureBase()
+	return s.baseSignal.AddOnceWithKey(handler, key)
+}
+
+// Keys returns a snapshot of all listener keys. See BaseSignal.Keys for details.
+func (s *AsyncSignal[T]) Keys() []string {
+	s.ensureBase()
+	return s.baseSignal.Keys()
+}
+
+// HasKey reports whether a listener with the given key exists. See BaseSignal.HasKey.
+func (s *AsyncSignal[T]) HasKey(key string) bool {
+	s.ensureBase()
+	return s.baseSignal.HasKey(key)
+}
+
 // Emit invokes all current listeners asynchronously (fire-and-forget).
 //
 // Emit schedules each subscribed listener in its own goroutine and returns

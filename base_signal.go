@@ -2,6 +2,7 @@ package signals
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -13,6 +14,10 @@ type keyedListener[T any] struct {
 	key string
 	// keyed indicates whether this listener was added with an explicit key
 	keyed bool
+	// auto indicates the key was synthesized internally (e.g. for an unkeyed
+	// AddOnce so it can self-remove) rather than supplied by the caller. Such keys
+	// are hidden from Keys() introspection.
+	auto bool
 
 	// listener is the standard callback function invoked when the signal is emitted
 	listener SignalListener[T]
@@ -21,6 +26,13 @@ type keyedListener[T any] struct {
 	// When present, it takes precedence over the standard listener.
 	listenerErr SignalListenerErr[T]
 }
+
+// onceKeyPrefix namespaces internally generated keys for unkeyed AddOnce listeners.
+// The NUL prefix makes a collision with a caller-supplied key effectively impossible.
+const onceKeyPrefix = "\x00once-"
+
+// onceCounter generates unique internal keys for unkeyed one-time listeners.
+var onceCounter atomic.Uint64
 
 // BaseSignal provides the foundational implementation for signal management.
 // It handles listener registration, removal, and storage, but delegates the actual
@@ -185,25 +197,32 @@ func (s *BaseSignal[T]) AddListener(listener SignalListener[T], key ...string) i
 	if listener == nil {
 		panic("listener cannot be nil")
 	}
+	kl := keyedListener[T]{listener: listener}
+	if len(key) > 0 {
+		kl.key = key[0]
+		kl.keyed = true
+	}
+	return s.add(kl)
+}
 
+// add appends a prebuilt keyedListener using copy-on-write under the write mutex.
+// If the listener is keyed and its key already exists, it returns -1 and makes no
+// change; otherwise it publishes a new slice and returns the new subscriber count.
+func (s *BaseSignal[T]) add(kl keyedListener[T]) int {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	var k string
-	keyed := false
-	if len(key) > 0 {
-		k = key[0]
-		keyed = true
-		if _, ok := s.subscribersMap[k]; ok {
+	if kl.keyed {
+		if _, ok := s.subscribersMap[kl.key]; ok {
 			return -1
 		}
 	}
 
 	old := s.load()
 	dup := s.cloneForWrite(old, 1)
-	dup = append(dup, keyedListener[T]{key: k, keyed: keyed, listener: listener})
-	if keyed {
-		s.subscribersMap[k] = struct{}{}
+	dup = append(dup, kl)
+	if kl.keyed {
+		s.subscribersMap[kl.key] = struct{}{}
 	}
 	s.subs.Store(&dup)
 	return len(dup)
@@ -227,28 +246,59 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 	if listener == nil {
 		panic("listener cannot be nil")
 	}
-
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	var k string
-	keyed := false
+	kl := keyedListener[T]{listenerErr: listener}
 	if len(key) > 0 {
-		k = key[0]
-		keyed = true
-		if _, ok := s.subscribersMap[k]; ok {
-			return -1
-		}
+		kl.key = key[0]
+		kl.keyed = true
+	}
+	return s.add(kl)
+}
+
+// AddOnce registers a listener that fires exactly once and then automatically
+// removes itself. The one-shot guarantee is concurrency-safe: even if several
+// emissions run simultaneously, the handler is invoked at most once.
+//
+// Returns the number of subscribers after adding the listener.
+func (s *BaseSignal[T]) AddOnce(handler SignalListener[T]) int {
+	return s.addOnce(handler, "", false)
+}
+
+// AddOnceWithKey registers a keyed one-time listener. It behaves like AddOnce but
+// the listener is addressable by key (e.g. for early removal before it fires) and
+// participates in duplicate detection: it returns -1 if the key already exists.
+func (s *BaseSignal[T]) AddOnceWithKey(handler SignalListener[T], key string) int {
+	return s.addOnce(handler, key, true)
+}
+
+// addOnce wraps handler in a one-shot guard that runs it at most once (via an
+// atomic compare-and-swap) and removes the listener after the first emission.
+// Unkeyed one-time listeners get an internally generated key so they can
+// self-remove; that key is hidden from Keys().
+func (s *BaseSignal[T]) addOnce(handler SignalListener[T], key string, userKeyed bool) int {
+	if handler == nil {
+		panic("listener cannot be nil")
 	}
 
-	old := s.load()
-	dup := s.cloneForWrite(old, 1)
-	dup = append(dup, keyedListener[T]{key: k, keyed: keyed, listenerErr: listener})
-	if keyed {
-		s.subscribersMap[k] = struct{}{}
+	var fired atomic.Bool
+	k := key
+	auto := false
+	if !userKeyed {
+		k = onceKeyPrefix + strconv.FormatUint(onceCounter.Add(1), 10)
+		auto = true
 	}
-	s.subs.Store(&dup)
-	return len(dup)
+
+	wrapper := func(ctx context.Context, payload T) {
+		if !fired.CompareAndSwap(false, true) {
+			return // already fired by a concurrent emission
+		}
+		// Remove self first so a re-entrant emit from within handler cannot
+		// re-trigger this listener. Removing during emit is safe: the emit loop
+		// iterates the previously published (immutable) slice.
+		s.RemoveListener(k)
+		handler(ctx, payload)
+	}
+
+	return s.add(keyedListener[T]{key: k, keyed: true, auto: auto, listener: wrapper})
 }
 
 // RemoveListener removes a listener identified by the given key from the signal.
@@ -343,4 +393,29 @@ func (s *BaseSignal[T]) Len() int {
 // This method is safe for concurrent use and lock-free.
 func (s *BaseSignal[T]) IsEmpty() bool {
 	return len(s.load()) == 0
+}
+
+// Keys returns a snapshot of all caller-supplied listener keys. Internally
+// generated keys (from unkeyed AddOnce) and empty-string keys are omitted. The
+// snapshot is taken from the immutable published slice via a single atomic load,
+// so it is safe to call while other goroutines add or remove listeners.
+func (s *BaseSignal[T]) Keys() []string {
+	subs := s.load()
+	keys := make([]string, 0, len(subs))
+	for i := range subs {
+		if subs[i].keyed && !subs[i].auto && subs[i].key != "" {
+			keys = append(keys, subs[i].key)
+		}
+	}
+	return keys
+}
+
+// HasKey reports whether a listener with the given key is currently registered.
+// It is an O(1) lookup. The check serializes with writers via the write mutex so
+// it observes a consistent view of the keyed set.
+func (s *BaseSignal[T]) HasKey(key string) bool {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, ok := s.subscribersMap[key]
+	return ok
 }

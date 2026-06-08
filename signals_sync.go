@@ -66,6 +66,30 @@ func (s *SyncSignal[T]) IsEmpty() bool {
 	return s.baseSignal.IsEmpty()
 }
 
+// AddOnce registers a one-time listener. See BaseSignal.AddOnce for details.
+func (s *SyncSignal[T]) AddOnce(handler SignalListener[T]) int {
+	s.ensureBase()
+	return s.baseSignal.AddOnce(handler)
+}
+
+// AddOnceWithKey registers a keyed one-time listener. See BaseSignal.AddOnceWithKey.
+func (s *SyncSignal[T]) AddOnceWithKey(handler SignalListener[T], key string) int {
+	s.ensureBase()
+	return s.baseSignal.AddOnceWithKey(handler, key)
+}
+
+// Keys returns a snapshot of all listener keys. See BaseSignal.Keys for details.
+func (s *SyncSignal[T]) Keys() []string {
+	s.ensureBase()
+	return s.baseSignal.Keys()
+}
+
+// HasKey reports whether a listener with the given key exists. See BaseSignal.HasKey.
+func (s *SyncSignal[T]) HasKey(key string) bool {
+	s.ensureBase()
+	return s.baseSignal.HasKey(key)
+}
+
 // Emit synchronously invokes all registered listeners with the given payload.
 // Listeners are called sequentially in the order they were registered (though order
 // may change after removals due to swap-remove optimization).
