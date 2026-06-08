@@ -65,49 +65,70 @@ law from queueing theory:
 > three of: (1) bounded memory, (2) a producer that never waits, (3) zero event
 > loss. You must give up one.**
 
-This library encodes the choice in *which method you call*:
+**How v1.4 resolves the trilemma (per [ADR 0001](../design/0001-async-dispatch-and-error-model.md)):**
+v1.4 keeps **(2) the producer never waits** and **(3) zero loss**, and therefore gives
+up **(1) bounded memory** under sustained overload — excess handlers **park** (cheaply)
+rather than being dropped or blocking the caller. This is a deliberate choice: nothing
+is silently lost, and `Emit` stays truly fire-and-forget. The cost is that a *sustained*
+producer-faster-than-consumer condition lets the parked-work backlog grow without a hard
+limit (documented honestly; it is a *load* condition with visible symptoms).
 
-- **Fire-and-forget `Emit`** has promised the producer never waits ⇒ under overload
-  it is, by definition, a **loss-tolerant** channel: it keeps memory bounded and
-  **drops + counts** overflow rather than growing without limit.
-- **`EmitAndWait` / `EmitAndWaitErr`** are allowed to make the producer wait ⇒ they
-  refuse to lose events and instead apply **backpressure** (the producer slows).
+The levers v1.4 actually ships:
 
-The rule of thumb that falls out of this: **loss-intolerant data (trades, orders,
-audit entries) must travel on a path that is allowed to slow you down.** A method
-that never makes you wait will, under enough pressure, have to drop something. The
-[Load Shedding](flow-control/load-shedding.md) and [Backpressure](flow-control/backpressure.md)
-patterns are the two halves of this trade-off.
+- **`Emit`** — fire-and-forget; one dispatcher goroutine, returns immediately. Handlers
+  run concurrently. A `WorkerPoolSize` bound caps *concurrent* handlers; excess **parks**
+  (no drop, no caller-block). Unbounded by default (a bound can starve long-running
+  listeners — see [Bounded Concurrency](flow-control/bounded-concurrency.md)).
+- **`EmitAndWait` / `EmitAndWaitErr`** — allowed to make the caller wait ⇒ the natural
+  **backpressure** path: the producer's own loop self-throttles to the rate handlers
+  complete, and no event is lost. This is the path for loss-intolerant work.
+
+The rule of thumb: **loss-intolerant data (trades, orders, audit entries) belongs on
+`EmitAndWait`** — the path that lets the producer slow down. See
+[Backpressure](flow-control/backpressure.md).
+
+> **Deferred (🔭 post-v1.4):** explicit **drop / block / error overflow policies** and a
+> hard backlog cap are *designed but not in v1.4*. The [Load Shedding](flow-control/load-shedding.md)
+> pattern documents that future opt-in; it is **not** the default `Emit` behavior in v1.4.
 
 ---
 
 ## Authoritative API reference (use these signatures exactly)
 
 Every pattern in this catalog must use the signatures below and nothing else.
-APIs are tagged **✅ shipped** (available today) or **🔜 v1.4** (agreed for the v1.4
-release; shown so patterns are complete). Never invent APIs beyond this list.
+APIs are tagged **✅ shipped** (available today), **🔜 v1.4** (agreed for the v1.4
+release), or **🔭 post-v1.4** (designed but deliberately deferred — see
+[ADR 0001](../design/0001-async-dispatch-and-error-model.md)). Never invent APIs
+beyond this list.
+
+> **Async dispatch model (ADR 0001, authoritative).** `AsyncSignal.Emit` spawns **one
+> dispatcher goroutine** and returns immediately (fire-and-forget, no asterisk); each
+> handler then runs **independently/concurrently** in its own goroutine. A configured
+> `WorkerPoolSize` bounds how many handlers run **at once** via a counting semaphore;
+> excess handlers **park** (cheaply) until a slot frees — they are **not dropped** and
+> the caller is **never blocked**. With no `WorkerPoolSize`, dispatch is **unbounded**
+> (the safe default — a bound can starve long-running listeners). Explicit
+> drop/block/error overflow *policies* are **🔭 post-v1.4**, not shipped in v1.4.
 
 ### Construction
 ```go
-signals.New[T]() *AsyncSignal[T]                               // ✅ async signal
+signals.New[T]() *AsyncSignal[T]                               // ✅ async signal (unbounded dispatch)
 signals.NewSync[T]() *SyncSignal[T]                            // ✅ sync signal
 signals.NewWithOptions[T](*SignalOptions) *AsyncSignal[T]      // ✅
 signals.NewSyncWithOptions[T](*SignalOptions) *SyncSignal[T]   // ✅
+signals.DefaultWorkerPoolSize() int                           // 🔜 v1.4 — recommended bound = 2*NumCPU
 
 type SignalOptions struct {
     InitialCapacity int             // ✅
     GrowthFunc      func(int) int   // ✅
-    WorkerPoolSize  int             // 🔜 v1.4 — bounds concurrent async listeners
-    Overflow        OverflowPolicy  // 🔜 v1.4 — what to do when the bound is saturated
+    WorkerPoolSize  int             // 🔜 v1.4 — bounds CONCURRENT handlers; 0/unset = unbounded
+    // Overflow OverflowPolicy      // 🔭 post-v1.4 — explicit drop/block/error policy (NOT in v1.4)
 }
 
-// 🔜 v1.4
-type OverflowPolicy int
-const (
-    OverflowDropNewest OverflowPolicy = iota // default: drop the incoming overflow, count it
-    OverflowBlock                            // make Emit wait (turns Emit into backpressure)
-    OverflowError                            // report overflow via the overflow hook, do not run
-)
+// 🔭 post-v1.4 — NOT shipped in v1.4. In v1.4, excess handlers park (no drop, no
+// caller-block) when a WorkerPoolSize bound is hit; there is no overflow policy knob yet.
+// type OverflowPolicy int
+// const ( OverflowDropNewest OverflowPolicy = iota; OverflowBlock; OverflowError )
 ```
 
 ### Listener types
@@ -139,16 +160,16 @@ TryEmit(ctx context.Context, payload T) error   // ✅ sequential, stops on firs
 
 ### Emission — AsyncSignal
 ```go
-Emit(ctx context.Context, payload T)                  // ✅ fire-and-forget; returns immediately
-EmitAndWait(ctx context.Context, payload T)           // ✅ concurrent listeners, blocks until all done
+Emit(ctx context.Context, payload T)                  // ✅ fire-and-forget; one dispatcher goroutine, returns immediately
+EmitAndWait(ctx context.Context, payload T)           // ✅ concurrent handlers, blocks until all done
 EmitAndWaitErr(ctx context.Context, payload T) error  // 🔜 v1.4 — concurrent, waits, errors.Join'd
 ```
 
-### Failure & overflow hooks
+### Failure hooks
 ```go
 signals.SetPanicHandler(func(recovered any))          // ✅ global; routes recovered async panics
-(*AsyncSignal[T]).OnError(func(ctx context.Context, err error)) // 🔜 v1.4 — per-signal async error sink
-(*AsyncSignal[T]).OnOverflow(func(dropped T))                   // 🔜 v1.4 — per-signal drop notification
+(*AsyncSignal[T]).OnError(func(ctx context.Context, err error)) // 🔜 v1.4 — per-signal async error sink (multiple allowed)
+// (*AsyncSignal[T]).OnOverflow(func(dropped T))       // 🔭 post-v1.4 — only meaningful with a drop policy (not in v1.4)
 ```
 
 ### Semantics that every pattern can rely on

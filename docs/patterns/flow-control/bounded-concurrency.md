@@ -2,14 +2,25 @@
 
 **Family:** Flow-Control
 · **Also Known As:** Worker Limiting, Concurrency Cap, Semaphore Dispatch
-· **Status:** 🔜 v1.4 (`SignalOptions.WorkerPoolSize`)
+· **Status:** `SignalOptions.WorkerPoolSize` and `DefaultWorkerPoolSize()` are 🔜 v1.4.
+  A hard backlog ceiling (overflow mode H1) is 🔭 post-v1.4.
 
 ## Intent
 
-Cap the number of async listeners running simultaneously so that a fast emitter
-with slow listeners **cannot spawn unbounded goroutines** and OOM the process. The
-cap turns "one goroutine per emission, forever" into "at most *N* goroutines alive at
-any instant."
+Cap the number of async listeners running **at once** so that a fast emitter with
+slow listeners **cannot run unbounded handler goroutines concurrently** and OOM the
+process. The cap turns "every handler runs immediately, no matter how many" into "at
+most *N* handlers run at any instant; the excess **parks** cheaply until a slot
+frees."
+
+> **What a bound does and does not do (ADR 0001).** `WorkerPoolSize` is a counting
+> semaphore that bounds *concurrent* handler execution. When all *N* slots are held,
+> excess handler work **parks** (cheaply, ~2 KB idle) until a slot frees — it is
+> **never dropped** and the caller is **never blocked** (`Emit` already returned; the
+> parking happens in the background dispatcher goroutine). A bound caps *execution*,
+> not the *backlog*: under sustained overload the parked backlog can still grow (the
+> honest caveat below). A hard ceiling on the backlog (drop or block on overflow) is
+> 🔭 post-v1.4 — see [Load Shedding](load-shedding.md).
 
 ## Motivation
 
@@ -56,12 +67,24 @@ for o := range acceptedOrders {
 }
 ```
 
-Now at most 50 listener invocations run at once. The goroutine count has a hard
-ceiling no matter how fast orders arrive, memory stays flat, and the service survives
-the spike at a steady, predictable throughput. What happens to the *excess* arrivals
-once the bound is saturated — drop them or wait — is a separate decision (see
-Applicability and Related Patterns); bounding the concurrency is the foundation that
-makes either choice possible.
+Now at most 50 listener invocations run at once. The number of *concurrently
+executing* handlers has a hard ceiling no matter how fast orders arrive, and the
+service survives the spike at a steady, predictable throughput. The *excess* arrivals
+once the bound is saturated are not lost and do not block the caller — in v1.4 they
+**park** cheaply until a slot frees (the `EmitAndWait` loop above also self-paces, so
+the producer never races ahead of the bound). A *hard ceiling on the parked backlog*
+— dropping the excess ([Load Shedding](load-shedding.md), 🔭 post-v1.4) or blocking on
+a bounded `Emit` ([Backpressure](backpressure.md), 🔭 post-v1.4) — is a separate, later
+decision; bounding the concurrency is the foundation that makes either choice possible.
+
+> **The decisive trade-off: a bound can *starve* long-running listeners.** This is the
+> reason v1.4's default is **unbounded**, not a default bound. If you set
+> `WorkerPoolSize: N` and your listeners are long-running (a streaming RPC, a tail
+> follower, a subscription that lives for minutes), the first *N* handlers can hold all
+> the slots indefinitely and the remaining listeners **never start** — they park
+> forever behind handlers that never return. An unbounded default guarantees every
+> listener at least *runs*; a bound trades that guarantee for resource ceilings. Choose
+> a bound only when your handlers are *short-lived* relative to the emit rate.
 
 ## Applicability
 
@@ -90,19 +113,23 @@ makes either choice possible.
 ```
                        WorkerPoolSize = N  (counting semaphore, N slots)
                        ┌──────────────────────────────────────────┐
-  Producer ──Emit──▶  [ acquire a slot ]                          │
-                       │      │                                    │
-                       │      ├─ slot acquired ─▶ spawn goroutine ─▶ run listener
-                       │      │                        └─ on return: release slot
+  Producer ──Emit──▶  (one dispatcher goroutine, in the background)│
+   (returns at once)   │                                          │
+                       │  for each listener: acquire a slot        │
+                       │      ├─ slot free ─▶ spawn goroutine ─▶ run listener
+                       │      │                   └─ on return: release slot
                        │      │
-                       │      └─ no slot free ─▶ Overflow policy decides:
-                       │                            ├─ drop   (see Load Shedding)
-                       │                            └─ wait   (see Backpressure)
+                       │      └─ all N held ─▶ PARK cheaply until a slot frees
+                       │                         (no drop, caller NOT blocked)
                        └──────────────────────────────────────────┘
 
-  At any instant: live listener goroutines ≤ N.
+  At any instant: CONCURRENTLY running listener goroutines ≤ N.
+  Excess handler work parks in the background dispatcher; it is never dropped.
   When the signal is idle: ZERO goroutines alive — nothing to shut down, nothing to leak.
   Effective concurrency = min(N, len(listeners)).
+
+  🔭 post-v1.4: a hard backlog ceiling (drop → Load Shedding, or block → Backpressure)
+  would replace "park forever" with an explicit overflow policy. NOT in v1.4.
 ```
 
 ## Participants
@@ -113,7 +140,8 @@ makes either choice possible.
 | **Signal** | Acquires a semaphore slot before spawning each listener goroutine |
 | **Counting semaphore** | Holds `WorkerPoolSize` slots; the hard ceiling on concurrency |
 | **Listener goroutine** | Spawned per admitted invocation; releases its slot when it returns |
-| **Overflow policy** | Decides the fate of an emission that finds the semaphore saturated (drop vs. wait) |
+| **Parked dispatch** | When all slots are held, excess handler spawns park (cheaply) in the background dispatcher until a slot frees — not dropped, caller not blocked |
+| **Overflow policy** (🔭 post-v1.4) | Would decide the fate of an emission when the semaphore is saturated (drop vs. block) instead of parking. NOT in v1.4 |
 | **Listener** | Processes the payload; oblivious to the bound |
 
 ## Collaborations
@@ -124,40 +152,49 @@ makes either choice possible.
 3. **If a slot is acquired:** the signal spawns a goroutine that runs the listener and
    **releases the slot when the listener returns** (whether it completes, errors, or
    panics — release is guaranteed).
-4. **If the semaphore is saturated** (all *N* slots held): the configured `Overflow`
-   policy decides — discard the work ([Load Shedding](load-shedding.md)) or make the
-   caller wait for a slot ([Backpressure](backpressure.md)).
-5. As running listeners return, slots are released and waiting/subsequent invocations
+4. **If the semaphore is saturated** (all *N* slots held): in v1.4 the excess handler
+   spawn **parks** cheaply in the background dispatcher until a slot frees — nothing is
+   dropped and the caller (whose `Emit` already returned) is never blocked. An explicit
+   overflow *policy* that instead discards ([Load Shedding](load-shedding.md)) or blocks
+   ([Backpressure](backpressure.md)) is 🔭 post-v1.4.
+5. As running listeners return, slots are released and parked/subsequent invocations
    proceed. The system self-balances at a concurrency of exactly `min(N, listeners)`.
 
 ## Consequences
 
 **Benefits**
 
-- ✓ **Hard ceiling on goroutines and memory.** No matter how fast the producer emits,
-  at most *N* listener goroutines are alive — no pile-up, no meltdown.
+- ✓ **Hard ceiling on *concurrent* execution.** No matter how fast the producer emits,
+  at most *N* listener goroutines *run at once* — no concurrent pile-up overwhelming a
+  downstream. (This bounds execution, not the backlog — see Liabilities.)
 - ✓ **Downstream protection.** Sizing the bound to a dependency's capacity (DB pool,
   API limit) prevents the signal from overwhelming it.
-- ✓ **The foundation for flow-control policy.** Once a bound exists, you can choose to
-  *drop* or *wait* on overflow. Without it, neither policy has anything to act on.
+- ✓ **No event loss, no caller blocking.** Excess work parks cheaply instead of being
+  dropped, and `Emit` still returns immediately — the fire-and-forget contract holds.
 - ✓ **No lifecycle to manage.** Because slots gate goroutine *spawning* rather than
   feeding a persistent pool, an idle signal holds zero goroutines (see Implementation).
 
 **Liabilities**
 
+- ✗ **Bounds concurrency, not the backlog.** Under *sustained* overload, parked
+  dispatch accumulates without a hard limit (cheap, ~2 KB, idle — but unbounded). A
+  hard backlog ceiling needs an explicit drop/block overflow policy, which is
+  🔭 post-v1.4. This is the trilemma cost v1.4 accepts (see below).
+- ✗ **A bound can starve long-running listeners.** If handlers do not return promptly,
+  the first *N* hold every slot and the rest never start. This is the decisive reason
+  the v1.4 default is **unbounded** — only set a bound when handlers are short-lived.
 - ✗ **Tuning required.** Too small a bound throttles throughput needlessly; too large
   weakens the protection. The right value depends on the workload (see Implementation).
 - ✗ **Not free of goroutine churn.** The semaphore bounds *concurrency* but still
   allocates a goroutine per invocation — it does not amortize goroutine creation the
   way a persistent worker pool would (honest caveat in Implementation).
-- ✗ **A bound alone does not decide loss vs. wait.** It is the *mechanism*; you still
-  must pick the *policy* ([Load Shedding](load-shedding.md) or
-  [Backpressure](backpressure.md)).
 
-> **Trilemma corner:** Bounded Concurrency by itself only guarantees *bounded
-> memory*. Whether it additionally preserves *never-wait* (by dropping) or *never-lose*
-> (by waiting) is decided by the overflow policy layered on top. Bounding is the
-> precondition for making that choice meaningful.
+> **Trilemma corner (per [ADR 0001](../../design/0001-async-dispatch-and-error-model.md)):**
+> v1.4 keeps *never block the caller* and *never lose an event*, and therefore gives up
+> *bounded memory* under sustained overload — excess handlers **park** rather than being
+> dropped or blocking the producer. A bound caps how many handlers *execute* at once; it
+> does **not** cap the parked backlog. Adding that hard ceiling (an opt-in drop or block
+> overflow policy) is 🔭 post-v1.4.
 
 ## Implementation
 
@@ -182,11 +219,35 @@ makes either choice possible.
    `WorkerPoolSize: 64` but register only 3 listeners, you get at most 3 concurrent
    invocations per emit — the bound never forces extra concurrency, it only caps it.
 
-5. **Default is `2 * runtime.NumCPU()`.** When `WorkerPoolSize` is left zero, the
-   signal uses `2 * runtime.NumCPU()` — a reasonable middle ground that allows some IO
-   overlap without unbounded fan-out. Override it deliberately for your workload.
+5. **The default is UNBOUNDED, by design.** When `WorkerPoolSize` is left zero/unset,
+   dispatch is **unbounded** — one goroutine per handler, none parked. v1.4 deliberately
+   does **not** apply a default bound, because any bound can *starve long-running
+   listeners* (note 2 above and the Liabilities): a silent default could make some
+   listeners never run. If you want bounding without choosing a number, opt in with
+   `DefaultWorkerPoolSize()` (🔜 v1.4 — returns `2 * runtime.NumCPU()`), the
+   *recommended* value; it is recommended, not automatic.
 
-6. **Sizing guidance — match the bottleneck, not the producer:**
+   ```go
+   // Opt in to the recommended bound explicitly — unset stays unbounded.
+   sig := signals.NewWithOptions[T](&signals.SignalOptions{
+       WorkerPoolSize: signals.DefaultWorkerPoolSize(), // 🔜 v1.4 — = 2*NumCPU
+   })
+   ```
+
+6. **Pool size ≠ subscriber count — size to the *bottleneck*, not the listener count.**
+   The bound is "how much concurrency my dependencies can absorb," never "how many
+   listeners (or events) there are." A worked example: suppose 100 listeners all write
+   to a database fronted by **20** connections.
+   - Set `WorkerPoolSize: 20` (match the DB pool) → at most 20 writes contend for 20
+     connections; the other 80 handler spawns **park** until a connection frees. The
+     bound *is* the protection.
+   - Set `WorkerPoolSize: 100` (= subscriber count) → all 100 run at once and 80 of them
+     immediately pile up *inside* the 20-connection pool's wait queue. A bound equal to
+     the subscriber count is **no cap at all** — you are back to unbounded fan-out onto
+     the real bottleneck. The whole point of the bound is to be *smaller* than the work
+     it protects.
+
+7. **Sizing guidance — match the bottleneck, not the producer:**
    - **CPU-bound listeners** (parsing, hashing, compression): `runtime.NumCPU()`. More
      goroutines than cores just adds scheduler churn for no throughput.
    - **IO-bound listeners** (network, disk): a **small multiple** of `NumCPU` (e.g.
@@ -196,7 +257,7 @@ makes either choice possible.
      The bound should be "what the downstream can absorb," never "how many events
      arrive."
 
-7. **Honest caveat — a true pool is a possible future optimization.** Because each
+8. **Honest caveat — a true pool is a possible future optimization.** Because each
    invocation still allocates a goroutine, the semaphore design does not *amortize*
    goroutine creation; under extreme throughput that allocation is measurable. A
    persistent worker pool would amortize it, at the cost of a lifecycle (`Close`) and
@@ -204,13 +265,16 @@ makes either choice possible.
    leak-freedom; a pool is a candidate optimization **gated on benchmarks**, not a
    promise.
 
-8. **The bound is a *mechanism*; shedding vs. blocking is the *policy*.** This pattern
-   stops at "no more than *N* at once." Pairing it with `Overflow: OverflowDropNewest`
-   gives [Load Shedding](load-shedding.md); pairing it with `Overflow: OverflowBlock`
-   (or using `EmitAndWait`) gives [Backpressure](backpressure.md). Always make the
-   policy choice explicit — the default (`OverflowDropNewest`) is loss-tolerant.
+9. **The bound is a *mechanism*; what to do when it saturates is a separate question.**
+   This pattern stops at "no more than *N* at once; the excess parks (no drop, no
+   caller-block)." In v1.4, parking *is* the saturation behavior — there is no overflow
+   knob. The 🔭 post-v1.4 overflow policies would let you *replace* parking with an
+   explicit choice: `Overflow: OverflowDropNewest` → [Load Shedding](load-shedding.md),
+   or `Overflow: OverflowBlock` → [Backpressure](backpressure.md). Until then, the
+   loss-intolerant path is `EmitAndWait`/`EmitAndWaitErr` (see Backpressure), and there
+   is no drop-by-default behavior to opt out of.
 
-9. **Canceled context still short-circuits.** As with every emit variant, if
+10. **Canceled context still short-circuits.** As with every emit variant, if
    `ctx.Err() != nil` at emit time, no listener runs and no slot is acquired — the
    bound never interferes with cancellation semantics.
 
@@ -248,9 +312,11 @@ for j := range jobs {
 ```
 
 The acquire/release of a semaphore slot around each listener goroutine (the heart of
-step 3) is what turns "one goroutine per emission, forever" into "at most *N* alive at
-any instant." Whether a *saturated* bound drops or waits is the *policy* layered on
-top — see [Load Shedding](load-shedding.md) and [Backpressure](backpressure.md).
+step 3) is what turns "every handler runs at once" into "at most *N* run at once; the
+excess parks." In v1.4 a saturated bound **parks** the excess (no drop, no
+caller-block). Replacing parking with an explicit drop or block policy is 🔭 post-v1.4
+— see [Load Shedding](load-shedding.md) and [Backpressure](backpressure.md). For
+lossless backpressure today, drive the bounded signal with `EmitAndWait` as shown.
 
 ### Practical Example 1 — Order writes bounded to the DB connection pool
 
@@ -385,11 +451,16 @@ rate limiter by fanning out faster than the contract allows.
 - **Per-dependency cap.** When a single signal fans out to multiple downstreams with
   different limits, split into separate signals each bounded to its own dependency
   rather than one bound that fits none of them well.
-- **Bound + drop = Load Shedding.** Add `Overflow: OverflowDropNewest` to shed the
-  excess when saturated — see [Load Shedding](load-shedding.md).
-- **Bound + wait = Backpressure.** Add `Overflow: OverflowBlock` (or use
-  `EmitAndWait`) to make the producer wait for a slot — see
+- **Bound + wait = Backpressure (v1.4).** Drive the bounded signal with
+  `EmitAndWait`/`EmitAndWaitErr` so the producer's loop self-throttles to the listeners'
+  throughput — the lossless path that ships in v1.4. See
   [Backpressure](backpressure.md).
+- **Bound + drop = Load Shedding (🔭 post-v1.4).** A future `Overflow: OverflowDropNewest`
+  would shed the excess instead of parking it when saturated — see
+  [Load Shedding](load-shedding.md). Not in v1.4.
+- **Bound + block policy (🔭 post-v1.4).** A future `Overflow: OverflowBlock` would make a
+  bounded `Emit` call site wait for a slot — see [Backpressure](backpressure.md). Not in
+  v1.4; use `EmitAndWait` today.
 
 ## Known Uses
 
@@ -407,16 +478,18 @@ rate limiter by fanning out faster than the contract allows.
 
 ## Related Patterns
 
-- **[Load Shedding](load-shedding.md)** — the *drop* policy layered on this bound: when
-  the *N* slots are saturated, discard and count the excess. Bounded Concurrency is its
-  prerequisite — there is nothing to shed without a bound.
-- **[Backpressure](backpressure.md)** — the *wait* policy layered on this bound: when
-  saturated, slow the producer instead of dropping. Also requires this bound to exist
-  first. Shedding vs. blocking is the *policy*; bounding is the *mechanism* shared by
-  both.
+- **[Load Shedding](load-shedding.md)** — the 🔭 post-v1.4 *drop* policy that would layer
+  on this bound: when the *N* slots are saturated, discard and count the excess instead
+  of parking it. Bounded Concurrency is its prerequisite — there is nothing to shed
+  without a bound. Not in v1.4.
+- **[Backpressure](backpressure.md)** — the *wait* path for this bound: drive it with
+  `EmitAndWait`/`EmitAndWaitErr` (v1.4) so the producer self-throttles instead of
+  letting the backlog grow. A bounded `Emit` blocking *policy* (`OverflowBlock`) is
+  🔭 post-v1.4. Bounding is the *mechanism*; the saturation behavior is the *policy*.
 - **[Fire-and-Forget Dispatch](../dispatch/fire-and-forget-dispatch.md)** — the
-  unbounded default this pattern tames; pair the bound with a drop policy to keep
-  fire-and-forget's non-blocking contract.
+  unbounded default this pattern tames; the bound caps *concurrent* execution while
+  keeping fire-and-forget's non-blocking contract (excess parks, never blocks the
+  caller).
 - **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — `EmitAndWait` combined
   with a bound gives a self-pacing producer loop, as in the sample above.
 - **[Result Aggregation](../reliability/result-aggregation.md)** — when bounded

@@ -2,8 +2,9 @@
 
 **Family:** Flow-Control
 · **Also Known As:** Flow Control, Producer Throttling
-· **Status:** Builds on ✅ `EmitAndWait`; the explicit blocking overflow path
-  (`EmitAndWaitErr`, `SignalOptions.Overflow = OverflowBlock`) is 🔜 v1.4
+· **Status:** ✅/🔜 v1.4. The v1.4 backpressure path is `EmitAndWait` (✅) and
+  `EmitAndWaitErr` (🔜 v1.4). The alternative blocking *policy*
+  (`SignalOptions.Overflow = OverflowBlock` on a bounded `Emit`) is 🔭 post-v1.4.
 
 ## Intent
 
@@ -11,6 +12,16 @@ Guarantee **zero event loss** under sustained overload by slowing the **producer
 down — making it wait — instead of dropping events. Backpressure is the
 loss-intolerant counterpart to [Load Shedding](load-shedding.md): same trilemma,
 opposite sacrifice.
+
+> **How v1.4 does backpressure (per [ADR 0001](../../design/0001-async-dispatch-and-error-model.md)).**
+> In v1.4 the backpressure path is **`EmitAndWait` / `EmitAndWaitErr`**: the caller
+> waits for the emission's handlers to complete, so the producer's loop self-throttles
+> to the listeners' throughput and no event is lost. This is the **shipped, lossless**
+> path for loss-intolerant data. A separate `OverflowBlock` *policy* (a bounded `Emit`
+> that blocks for a slot) is **designed but deferred to 🔭 post-v1.4** — use
+> `EmitAndWait` instead today. (Note: v1.4's fire-and-forget `Emit` never drops either —
+> it *parks* the excess — but it does not slow the producer, so it is not a backpressure
+> path; loss-intolerant work must wait.)
 
 ## Motivation
 
@@ -24,29 +35,34 @@ auditor will eventually find the hole.
 Now the ledger's storage has a slow afternoon — replication lag, a failing-over
 primary — and writes that took 3ms now take 300ms. The matching engine, however, does
 not slow down: a volatile market means fills are arriving faster than ever. If this
-stream were fire-and-forget with a drop policy, here is the catastrophe:
+stream were fire-and-forget, here is the catastrophe:
 
 ```go
 var Fills = signals.New[Trade]()
-Fills.AddListener(writeToLedger) // now 300ms, occasionally saturates the bound
+Fills.AddListener(writeToLedger) // now 300ms each; far slower than fills arrive
 
 for t := range fills { // never slows; market is volatile
-    Fills.Emit(ctx, t) // fire-and-forget: under overload, EXCESS FILLS ARE DROPPED
+    Fills.Emit(ctx, t) // fire-and-forget: returns instantly, NEVER throttles the producer
 }
 ```
 
-`Emit` promised the producer would *never wait*. So when the ledger can't keep up, the
-only way to honour that promise while staying bounded is to **throw fills away**. For
-telemetry that's fine. For trades it is unacceptable: every dropped fill is a trade
-that happened in the market but does not exist in the firm's books.
+`Emit` promised the producer would *never wait*. In v1.4 it honours that promise by
+**parking** the excess handler work, not by dropping it — but parking does nothing to
+*slow the matching engine*. With fills arriving far faster than the ledger drains, the
+parked backlog grows without bound: memory climbs until the process is OOM-killed, and
+whatever was still parked at that moment is lost with the crash. A future drop policy
+([Load Shedding](load-shedding.md), 🔭 post-v1.4) would instead shed fills to stay
+bounded — also unacceptable here: every dropped fill is a trade that happened in the
+market but does not exist in the firm's books. The fire-and-forget contract simply has
+no way to make the producer feel the ledger's slowness, which is exactly what
+loss-intolerant data needs.
 
 The fix is to make the *producer* feel the ledger's slowness — to let the backpressure
 from a slow consumer **propagate upstream and throttle the source**:
 
 ```go
 var Fills = signals.NewWithOptions[Trade](&signals.SignalOptions{
-    WorkerPoolSize: 16,                  // bound concurrency (the mechanism)
-    Overflow:       signals.OverflowBlock, // 🔜 v1.4 — wait, don't drop (the policy)
+    WorkerPoolSize: 16, // bound concurrency (optional; caps in-flight ledger writes)
 })
 Fills.AddListener(writeToLedger)
 
@@ -87,19 +103,23 @@ trade a ledger must make.
 ## Structure
 
 ```
-                       WorkerPoolSize = N (the bound)   Overflow = OverflowBlock
+                       WorkerPoolSize = N (optional bound on in-flight handlers)
                        ┌──────────────────────────────────────────────┐
-  Producer ──EmitAndWait──▶ [ acquire a slot ]                        │
+  Producer ──EmitAndWait──▶ [ run this emission's listeners ]          │
    (allowed to wait)        │      │                                  │
         ▲   blocks here ────┘      ├─ slot free ─▶ run listener ──┐    │
         │                          │                              │    │
-        │                          └─ saturated ─▶ WAIT for a slot┘    │
+        │                          └─ all N busy ─▶ WAIT for a slot┘    │
         │                                            (producer parked) │
         └──────── returns only after the work completes ───────────────┘
 
+  v1.4 path: EmitAndWait / EmitAndWaitErr — the WAIT is the backpressure (no policy knob).
   The producer's loop runs at the consumer's true throughput.
   Slowness propagates UPSTREAM: the source channel fills, throttling the origin.
-  Trilemma corner sacrificed: producer-never-waits.
+  Trilemma corner sacrificed: producer-never-waits (you chose to wait).
+
+  🔭 post-v1.4: an `Overflow = OverflowBlock` policy would give a bounded `Emit` call
+  site the same block-on-saturation semantics. NOT in v1.4 — use EmitAndWait today.
 ```
 
 ## Participants
@@ -108,19 +128,21 @@ trade a ledger must make.
 |-------------|----------------|
 | **Producer (Emitter)** | Calls a waiting emit variant; **agrees to be slowed** |
 | **Signal** | Blocks the producer until a slot is free / the work completes |
-| **Concurrency bound** | `WorkerPoolSize` — the ceiling that, once hit, triggers waiting |
-| **Overflow policy** | `OverflowBlock` — makes a saturated `Emit` wait instead of drop |
+| **Concurrency bound** | `WorkerPoolSize` (optional) — caps in-flight handlers; with `EmitAndWait` the producer already waits per emission |
+| **Wait path** | `EmitAndWait` / `EmitAndWaitErr` (v1.4) — the caller waits for completion; the wait *is* the backpressure |
+| **Overflow policy** (🔭 post-v1.4) | `OverflowBlock` — would make a saturated bounded `Emit` wait instead of park/drop. NOT in v1.4 |
 | **Listener** | Processes events durably (e.g. writes the ledger); its speed sets the pace |
 | **Upstream source** | Receives the propagated backpressure (its buffer fills, it slows too) |
 
 ## Collaborations
 
-1. The producer calls `EmitAndWait(ctx, payload)` (or a bounded `Emit` under
-   `OverflowBlock`) and **agrees that this call may block**.
+1. The producer calls `EmitAndWait(ctx, payload)` / `EmitAndWaitErr(ctx, payload)` (or,
+   🔭 post-v1.4, a bounded `Emit` under `OverflowBlock`) and **agrees that this call may
+   block**.
 2. The signal runs the listeners concurrently, up to the `WorkerPoolSize` bound.
-3. **If the bound is saturated**, the producer is **parked** until a slot frees up
-   (under `OverflowBlock`), or until all listeners for this emission complete (under
-   `EmitAndWait`). Either way the producer does not proceed.
+3. **The producer is parked** until all listeners for this emission complete (under
+   `EmitAndWait`/`EmitAndWaitErr`) — or, under the 🔭 post-v1.4 `OverflowBlock` policy,
+   until a slot frees up. Either way the producer does not proceed.
 4. When the work completes, the call returns and the producer's loop takes its next
    item. Because each iteration waits, the loop **runs at the listeners' throughput**,
    not faster.
@@ -171,25 +193,31 @@ trade a ledger must make.
 
 2. **Therefore fire-and-forget `Emit` structurally cannot provide backpressure.**
    `Emit` made a hard promise: *the producer never waits*. A method that never waits
-   has no mechanism to push back on the source, so under sustained overload its only
-   bounded option is to **drop** ([Load Shedding](load-shedding.md)). This isn't a
-   missing feature — it is the logical consequence of the contract. **Loss-intolerant
-   data must not use `Emit`**; it must use `EmitAndWait` / `EmitAndWaitErr` or a
-   bounded `Emit` under `OverflowBlock`.
+   has no mechanism to push back on the source. In v1.4 it honours the promise by
+   **parking** the excess (never dropping, never blocking the caller) — but parking does
+   not throttle the producer, so under *sustained* overload the parked backlog grows
+   without bound (and a future drop policy would instead shed — [Load Shedding](load-shedding.md),
+   🔭 post-v1.4). Either way `Emit` cannot make the producer feel the consumer's
+   slowness. This isn't a missing feature — it is the logical consequence of the
+   contract. **Loss-intolerant data must not use `Emit`**; it must use `EmitAndWait` /
+   `EmitAndWaitErr` (and, 🔭 post-v1.4, a bounded `Emit` under `OverflowBlock`).
 
-3. **Two ways to get backpressure in this library:**
-   - **`EmitAndWait` / `EmitAndWaitErr`** (the natural path): the producer's loop
-     self-throttles because each iteration *waits for completion* before taking the
-     next item. No special policy required — waiting *is* the backpressure.
-     `EmitAndWaitErr` (🔜 v1.4) additionally returns the listeners' `errors.Join`'d
-     result so durable-write failures surface.
-   - **`SignalOptions.Overflow = OverflowBlock`** (🔜 v1.4): makes an otherwise-bounded
-     `Emit` *wait for a free slot* instead of dropping. Use this when you want an
-     `Emit`-shaped call site but blocking-on-saturation semantics.
+3. **The way to get backpressure in v1.4 — `EmitAndWait` / `EmitAndWaitErr`:** the
+   producer's loop self-throttles because each iteration *waits for completion* before
+   taking the next item. No special policy required — waiting *is* the backpressure.
+   `EmitAndWaitErr` (🔜 v1.4) additionally returns the listeners' `errors.Join`'d result
+   so durable-write failures surface to the producer.
 
-4. **Always pair the policy with a bound.** `OverflowBlock` is meaningful only when
-   `WorkerPoolSize` is set — the bound is *when* to start waiting. See
-   [Bounded Concurrency](bounded-concurrency.md): bounding is the mechanism, blocking is
+   - **(🔭 post-v1.4) `SignalOptions.Overflow = OverflowBlock`:** would make an
+     otherwise-bounded `Emit` *wait for a free slot* instead of parking, giving an
+     `Emit`-shaped call site blocking-on-saturation semantics. Not in v1.4 — use
+     `EmitAndWait` today.
+
+4. **Always pair the (post-v1.4) block policy with a bound.** `OverflowBlock` is
+   meaningful only when `WorkerPoolSize` is set — the bound is *when* to start waiting.
+   (`EmitAndWait` needs no bound to apply backpressure: it waits per emission
+   regardless.) See [Bounded Concurrency](bounded-concurrency.md): bounding is the
+   mechanism, blocking is
    the policy layered on it.
 
 5. **Guard against deadlock and reentrancy — the signature failure mode.** If a
@@ -224,16 +252,19 @@ trade a ledger must make.
 
 A minimal skeleton that maps one-to-one onto the **Participants** and the
 **Structure** diagram above — the *Producer* that **agrees to be slowed**, the
-*Signal* with its *bound* and `OverflowBlock` *policy*, and the *Listener* whose speed
-sets the pace. The defining move is that the producer's loop *waits for completion*
+*Signal* with its (optional) *bound*, and the *Listener* whose speed sets the pace. In
+v1.4 the backpressure comes from `EmitAndWaitErr`, not a policy knob. The defining move
+is that the producer's loop *waits for completion*
 each iteration, so it runs at the consumer's true throughput and the slowness
 propagates upstream. Read this first; the practical examples then apply it.
 
 ```go
-// 1. SIGNAL: a concurrency BOUND (mechanism) + a blocking POLICY (wait, never drop).
+// 1. SIGNAL: an optional concurrency BOUND caps in-flight handlers. In v1.4 the
+//    backpressure comes from EmitAndWaitErr below (the producer waits per emission),
+//    NOT from an overflow policy. `Overflow: OverflowBlock` is 🔭 post-v1.4 and is not
+//    needed here — EmitAndWaitErr already throttles the producer.
 sig := signals.NewWithOptions[Record](&signals.SignalOptions{
-    WorkerPoolSize: 8,                     // 🔜 v1.4 — the bound: when to start waiting
-    Overflow:       signals.OverflowBlock, // 🔜 v1.4 — saturated Emit WAITS for a slot
+    WorkerPoolSize: 8, // 🔜 v1.4 — optional: ≤ 8 in-flight handlers per emission
 })
 
 // 2. LISTENER — the durable work. Its speed sets the pipeline's pace.
@@ -293,10 +324,10 @@ type Ledger interface {
 var fills *signals.AsyncSignal[Trade]
 
 func Init(ledger Ledger, outbox Outbox) {
-    // Bound concurrency (mechanism) + block on saturation (policy) = backpressure.
+    // Backpressure comes from EmitAndWaitErr in Publish (the producer waits per fill);
+    // the bound just caps in-flight ledger writes. No overflow policy needed in v1.4.
     fills = signals.NewWithOptions[Trade](&signals.SignalOptions{
-        WorkerPoolSize: 16,                    // 🔜 v1.4 — at most 16 ledger writes in flight
-        Overflow:       signals.OverflowBlock, // 🔜 v1.4 — wait for a slot, never drop
+        WorkerPoolSize: 16, // 🔜 v1.4 — at most 16 ledger writes in flight
     })
 
     fills.AddListenerWithErr(func(ctx context.Context, t Trade) error {
@@ -327,18 +358,22 @@ func Publish(ctx context.Context, in <-chan Trade, outbox Outbox) {
 **Contrast — the loss-tolerant call on loss-intolerant data (a real incident):**
 
 ```go
-// ❌ Fire-and-forget on trades: Emit promised never to wait, so under overload it
-//    MUST drop. A dropped fill is a trade missing from the firm's books.
+// ❌ Fire-and-forget on trades: Emit promised never to wait, so it can never throttle
+//    the matching engine. In v1.4 it PARKS the excess (never drops) — but with fills
+//    arriving far faster than the ledger drains, the parked backlog grows unbounded
+//    until the process is OOM-killed, losing everything still parked at the crash.
 var Fills = signals.New[Trade]()
 Fills.AddListener(writeToLedger)
 for t := range fills {
-    Fills.Emit(ctx, t) // excess fills silently shed under load → unreconciled books
+    Fills.Emit(ctx, t) // never throttles the producer → unbounded backlog → OOM
 }
 ```
 
-The symptom: during a volatile, high-latency window the ledger falls behind, fills are
-shed to stay bounded, and end-of-day reconciliation surfaces trades that executed in
-the market but were never recorded — a compliance and settlement incident.
+The symptom: during a volatile, high-latency window the ledger falls behind, the parked
+backlog and memory climb monotonically, and the process is eventually OOM-killed —
+end-of-day reconciliation then surfaces trades that executed in the market but were
+never durably recorded. A compliance and settlement incident either way: the cure is to
+let the producer *wait* (`EmitAndWaitErr`), not to fire-and-forget.
 
 ### Practical Example 2 — Order events to an immutable audit log
 
@@ -372,10 +407,10 @@ type AuditStore interface {
 var events *signals.AsyncSignal[OrderEvent]
 
 func Init(store AuditStore) {
-    // Bound (mechanism) + OverflowBlock (policy): a saturated Emit waits, never drops.
+    // Backpressure comes from EmitAndWaitErr in Ingest (the loop waits per entry);
+    // the bound just caps in-flight audit writes. No overflow policy needed in v1.4.
     events = signals.NewWithOptions[OrderEvent](&signals.SignalOptions{
-        WorkerPoolSize: 8,                     // 🔜 v1.4 — at most 8 audit writes in flight
-        Overflow:       signals.OverflowBlock, // 🔜 v1.4 — wait for a slot, never drop
+        WorkerPoolSize: 8, // 🔜 v1.4 — at most 8 audit writes in flight
     })
 
     // Reentrancy caution: this listener must NOT emit back onto `events`, or it could
@@ -409,12 +444,12 @@ the slowest *durable* stage, and not a single audit entry is lost.
 
 ## Variations
 
-- **`EmitAndWait` self-throttling (no policy).** The simplest backpressure: just wait
-  for completion each iteration. No `OverflowBlock` needed — the wait *is* the
-  backpressure. Use when you don't need the `Emit`-shaped call site.
-- **Bounded `Emit` with `OverflowBlock`.** Keep an `Emit` call site but block on
-  saturation — handy when migrating an existing fire-and-forget site to loss-intolerant
-  semantics with minimal change.
+- **`EmitAndWait` self-throttling (the v1.4 path).** The simplest backpressure: just
+  wait for completion each iteration. No `OverflowBlock` needed — the wait *is* the
+  backpressure. This is what ships in v1.4.
+- **Bounded `Emit` with `OverflowBlock` (🔭 post-v1.4).** Would keep an `Emit` call site
+  but block on saturation — handy when migrating an existing fire-and-forget site to
+  loss-intolerant semantics with minimal change. Deferred; use `EmitAndWait` today.
 - **Bounded wait + durable outbox (shown above).** Cap the wait and, on timeout, write
   to a WAL/outbox instead of dropping. Preserves zero-loss without risking an unbounded
   stall.
@@ -439,12 +474,12 @@ the slowest *durable* stage, and not a single audit entry is lost.
 ## Related Patterns
 
 - **[Load Shedding](load-shedding.md)** — the exact opposite trade-off on the same
-  trilemma: drop to keep the producer non-blocking, for loss-*tolerant* data.
-  Backpressure waits to keep zero loss, for loss-*intolerant* data. Pick by whether
-  losing an event is acceptable.
-- **[Bounded Concurrency](bounded-concurrency.md)** — the prerequisite mechanism;
-  `OverflowBlock` is the *blocking policy* layered on its bound. Bounding decides *when*
-  to wait.
+  trilemma: drop to keep the producer non-blocking, for loss-*tolerant* data (🔭 post-v1.4).
+  Backpressure waits to keep zero loss, for loss-*intolerant* data, and ships in v1.4 via
+  `EmitAndWait`/`EmitAndWaitErr`. Pick by whether losing an event is acceptable.
+- **[Bounded Concurrency](bounded-concurrency.md)** — caps in-flight handlers; with
+  `EmitAndWait` the producer already waits per emission so a bound is optional here. The
+  🔭 post-v1.4 `OverflowBlock` *policy* would layer block-on-saturation onto a bound.
 - **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — `EmitAndWait` is both
   the await-all dispatch mode *and* the natural backpressure path; a loop that awaits
   each emission self-throttles.

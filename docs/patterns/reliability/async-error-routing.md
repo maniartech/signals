@@ -87,9 +87,10 @@ ever having to wait for it.
   [Transactional Emission](transactional-emission.md) (`TryEmit`).
 - The failure is a **panic** (an unexpected bug), not a returned error → that is routed
   globally via [Panic Isolation](panic-isolation.md) and `SetPanicHandler`.
-- The event is **loss-tolerant** and a drop under overload is fine and uninteresting →
-  that is [Load Shedding](../flow-control/load-shedding.md), a different concern from a
-  listener that *ran and failed*.
+- The event is **loss-tolerant** and you care about *overload* behavior rather than a
+  listener that *ran and failed* → that is the flow-control concern of
+  [Load Shedding](../flow-control/load-shedding.md) (an explicit drop policy is
+  🔭 post-v1.4), distinct from this pattern.
 
 ## Structure
 
@@ -118,7 +119,7 @@ ever having to wait for it.
 | **Producer (Emitter)** | Calls `Emit`; returns immediately; is *gone* before any failure occurs |
 | **AsyncSignal** | Dispatches listeners detached; routes a listener's returned error to `OnError` |
 | **Error-returning listener** | `SignalListenerErr[T]` added via `AddListenerWithErr` (🔜 v1.4 on async); returns the failure |
-| **Error sink (`OnError`)** | Per-signal handler `func(ctx, err)`; logs/meters/alerts out-of-band (🔜 v1.4) |
+| **Error sink(s) (`OnError`)** | Per-signal handler(s) `func(ctx, err)`; **multiple may be registered** (additive), each logs/meters/alerts out-of-band (🔜 v1.4) |
 | **Panic handler** | Separate, *global* sink for panics — the same out-of-band idea for bugs (see [Panic Isolation](panic-isolation.md)) |
 
 ## Collaborations
@@ -129,12 +130,13 @@ ever having to wait for it.
 2. Some time later, the signal runs each error-returning listener in a detached
    goroutine.
 3. A listener returns a non-nil error. Because the original `Emit` caller is gone,
-   there is **nowhere to return it** — so the signal invokes the registered
-   `OnError(ctx, err)` handler with that error.
+   there is **nowhere to return it** — so the signal invokes **every** registered
+   `OnError(ctx, err)` handler with that error (sinks are additive).
 4. The `OnError` handler does its lightweight, non-blocking job: log, increment a
    counter, push to an alerting pipeline.
 5. If no `OnError` handler is registered, the error has no sink and is effectively
-   dropped — which is why registering one is the whole point of the pattern.
+   dropped — which is why registering at least one is the whole point of the pattern.
+   When several sinks are registered, each is invoked with the same error.
 6. A *panic* (as opposed to a returned error) takes the separate, global panic-handler
    path; the two failure channels are deliberately distinct.
 
@@ -200,14 +202,17 @@ ever having to wait for it.
    error before returning it (`fmt.Errorf("send welcome to %s: %w", u.Email, err)`), or
    embed an identifying field, so the sink can reconstruct what failed.
 
-7. **One sink per signal; fan out inside it.** `OnError` registers a single handler. If
-   multiple subsystems care (logging, metrics, alerting), call them all from within the
-   one handler rather than expecting multiple registrations.
+7. **Register one sink or several — they are additive.** `OnError` supports **multiple
+   registrations** on the same signal; every registered sink is invoked with each error
+   (🔜 v1.4). Register a dedicated sink per concern (logging, metrics, alerting), or fan
+   out inside a single handler — both are valid. Keep each sink cheap and non-blocking,
+   since they all run per failure.
 
-8. **Distinguish a *failed* listener from a *shed* event.** Under overload, an event may
-   be dropped before any listener runs — that is [Load Shedding](../flow-control/load-shedding.md)
-   and goes to `OnOverflow`, not `OnError`. `OnError` is strictly for listeners that
-   *ran and returned an error*. Keep the two counters separate.
+8. **`OnError` is strictly for listeners that *ran and returned an error*.** It is not an
+   overload signal: in v1.4 a `WorkerPoolSize` bound makes excess handlers **park** until
+   a slot frees (no drop, no caller-block), so nothing is shed before running. Explicit
+   drop/overflow policies are **🔭 post-v1.4** (see
+   [Load Shedding](../flow-control/load-shedding.md)) and out of scope here.
 
 ## Sample Code
 
@@ -397,7 +402,8 @@ self-heals instead of one that silently drifts out of sync.
   human.
 - **Per-signal vs. shared sink.** Give each signal its own `OnError` for precise
   attribution, or have several signals call into one shared handler function for a
-  single failure pipeline — your choice of granularity.
+  single failure pipeline — your choice of granularity. Because `OnError` is additive,
+  one signal can also feed *both* a per-signal sink and a shared pipeline at once.
 - **Errors *and* panics to one pipeline.** Have both `OnError` and the global
   `SetPanicHandler` feed the same incident-reporting client (with distinct tags) so all
   detached failures land in one place while staying classifiable.
@@ -430,6 +436,7 @@ self-heals instead of one that silently drifts out of sync.
 - **[Fire-and-Forget Dispatch](../dispatch/fire-and-forget-dispatch.md)** — the
   delivery mode that creates the "no caller to return to" situation this pattern
   resolves.
-- **[Load Shedding](../flow-control/load-shedding.md)** — distinguishes a *shed* event
-  (dropped before running, → `OnOverflow`) from a *failed* one (ran and errored, →
-  `OnError`). Keep the two counters separate.
+- **[Load Shedding](../flow-control/load-shedding.md)** — the flow-control concern of an
+  event *shed under overload before running* (an explicit drop policy is 🔭 post-v1.4),
+  as distinct from a listener that *ran and returned an error* (→ `OnError`). In v1.4 a
+  `WorkerPoolSize` bound parks excess handlers rather than dropping them.

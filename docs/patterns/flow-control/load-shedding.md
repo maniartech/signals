@@ -2,8 +2,27 @@
 
 **Family:** Flow-Control
 · **Also Known As:** Drop-and-Count, Overflow Dropping, Bounded-Lossy Dispatch
-· **Status:** Builds on ✅ Fire-and-Forget `Emit`; the explicit overflow hooks
-  (`OnOverflow`, `SignalOptions.Overflow`) are 🔜 v1.4
+· **Status:** 🔭 **post-v1.4 (deferred)**. The explicit overflow policy and hooks
+  (`SignalOptions.Overflow`, `OverflowDropNewest`, `OnOverflow`) this pattern depends
+  on are **designed but NOT shipped in v1.4**.
+
+> ## ⚠️ This pattern describes DEFERRED, opt-in future behavior — NOT v1.4 default
+> **In v1.4, `Emit` does not drop anything.** Per
+> [ADR 0001](../../design/0001-async-dispatch-and-error-model.md), when a
+> `WorkerPoolSize` bound is saturated, excess handler work **parks** cheaply until a
+> slot frees — it is **never dropped**, and the caller is **never blocked**. There is
+> no drop-and-count overflow behavior in v1.4, and no default bound at all (dispatch is
+> unbounded by default).
+>
+> This document is **forward-looking design** for a future opt-in **hard-bound mode (H1)**
+> in which a saturated bound *sheds* the excess (drop-and-count) rather than parking it —
+> the way to give the parked backlog a hard memory ceiling. Everything below tagged
+> 🔭 post-v1.4 (`OverflowDropNewest`, `OnOverflow`, `SignalOptions.Overflow`,
+> `OverflowError`) is **not available in v1.4**. For lossless behavior today, use
+> [Backpressure](backpressure.md) (`EmitAndWait`/`EmitAndWaitErr`); to bound *concurrent*
+> execution today, use [Bounded Concurrency](bounded-concurrency.md) (which parks, does
+> not drop). Read this pattern to understand the *intended* shedding policy, not v1.4
+> runtime behavior.
 
 ## Intent
 
@@ -45,21 +64,27 @@ when more arrives than the cap can absorb, **throw the excess away on purpose an
 increment a counter** so operators can see exactly how much was shed.
 
 ```go
+// 🔭 post-v1.4 (H1 hard-bound mode). NOT available in v1.4 — shown as the intended
+// future shedding API. In v1.4 the same bound would PARK the excess (never drop).
 var Telemetry = signals.NewWithOptions[Metric](&signals.SignalOptions{
-    WorkerPoolSize: 64,                  // at most 64 ships in flight
-    Overflow:       signals.OverflowDropNewest, // 🔜 v1.4 — shed the excess
+    WorkerPoolSize: 64,                         // at most 64 ships in flight
+    Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4 — shed the excess
 })
 Telemetry.AddListener(shipToCollector)
-Telemetry.OnOverflow(func(dropped Metric) { metrics.Inc("telemetry.shed") }) // 🔜 v1.4
+Telemetry.OnOverflow(func(dropped Metric) { metrics.Inc("telemetry.shed") }) // 🔭 post-v1.4
 
 for m := range firehose {
-    Telemetry.Emit(ctx, m) // bounded; under overload some metrics are shed + counted
+    Telemetry.Emit(ctx, m) // (post-v1.4) bounded; under overload some metrics shed + counted
 }
 ```
 
-The collector's bad afternoon now costs you *some dropped metrics* (acceptable for
-telemetry) instead of a *dead process* (not acceptable). And because every drop is
-counted, you can alert on the shed rate and see the incident in your dashboards.
+Under the future H1 mode, the collector's bad afternoon would cost you *some dropped
+metrics* (acceptable for telemetry) instead of a *dead process* (not acceptable), and
+because every drop is counted you could alert on the shed rate. **In v1.4 today**, this
+same configuration would instead **park** the excess (no drop): bounded *concurrency*,
+but the parked backlog can grow under sustained overload. If you need a hard memory
+ceiling for loss-tolerant data before H1 ships, slow the producer with
+[Backpressure](backpressure.md) instead.
 
 ## Applicability
 
@@ -98,6 +123,9 @@ counted, you can alert on the shed rate and see the incident in your dashboards.
                          │                          └─ Error ───────▶ OnOverflow(dropped) [no run]
                          └───────────────────────────┘
    Emit ALWAYS returns immediately (never blocks) under DropNewest/Error.
+
+   🔭 post-v1.4: the OverflowPolicy branch above is the INTENDED future shape. In v1.4
+   there is no OverflowPolicy — a saturated bound PARKS the excess (no drop, no hook).
 ```
 
 ## Participants
@@ -107,8 +135,8 @@ counted, you can alert on the shed rate and see the incident in your dashboards.
 | **Producer (Emitter)** | Calls `Emit`; on the hot path; must not block |
 | **Signal** | Performs the admission check against the concurrency bound |
 | **Concurrency bound** | `WorkerPoolSize` — the maximum number of listeners running at once |
-| **Overflow policy** | Decides the fate of an emission that can't be admitted (`OverflowDropNewest` for this pattern) |
-| **Overflow hook** | `OnOverflow(func(dropped T))` — observes/counts every shed event |
+| **Overflow policy** (🔭 post-v1.4) | Decides the fate of an emission that can't be admitted (`OverflowDropNewest` for this pattern). NOT in v1.4 — a v1.4 bound parks instead |
+| **Overflow hook** (🔭 post-v1.4) | `OnOverflow(func(dropped T))` — observes/counts every shed event. NOT in v1.4 |
 | **Listener** | Processes admitted events; oblivious to shedding |
 
 ## Collaborations
@@ -158,11 +186,12 @@ counted, you can alert on the shed rate and see the incident in your dashboards.
    is nothing to shed — and nothing to stop the meltdown. Always set
    `WorkerPoolSize`.
 
-2. **Choose the drop direction deliberately.** `OverflowDropNewest` discards the
-   *incoming* event (simplest, lowest latency, keeps already-queued work). Other
-   systems offer drop-oldest (favor fresh data — useful for "latest value wins"
-   gauges) or drop-random. v1.4 ships `OverflowDropNewest` as the default; document
-   clearly which one you rely on.
+2. **Choose the drop direction deliberately (🔭 post-v1.4).** `OverflowDropNewest`
+   discards the *incoming* event (simplest, lowest latency, keeps already-queued work).
+   Other systems offer drop-oldest (favor fresh data — useful for "latest value wins"
+   gauges) or drop-random. **v1.4 ships no overflow policy at all** — a saturated bound
+   parks, it does not drop. When H1 lands, `OverflowDropNewest` is the expected default
+   *for that opt-in mode*; document clearly which direction you rely on.
 
 3. **Never shed silently.** The defining discipline of this pattern is that *every*
    drop is counted. Wire `OnOverflow` to a metric counter at minimum. A shed rate
@@ -199,10 +228,13 @@ A minimal skeleton that maps one-to-one onto the **Participants** and the
 practical examples then apply it to real problems.
 
 ```go
+// 🔭 post-v1.4 (H1 hard-bound mode) — NOT available in v1.4. In v1.4 a saturated bound
+// PARKS the excess (no drop, no OnOverflow); use this only as the intended future API.
+
 // 1. SIGNAL with a concurrency BOUND and an overflow POLICY.
 sig := signals.NewWithOptions[Event](&signals.SignalOptions{
     WorkerPoolSize: 4,                          // the bound: ≤ 4 listeners at once
-    Overflow:       signals.OverflowDropNewest, // 🔜 v1.4 — the policy: shed the excess
+    Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4 — the policy: shed the excess
 })
 
 // 2. LISTENER — the admitted work. Oblivious to shedding.
@@ -211,14 +243,15 @@ sig.AddListener(func(ctx context.Context, e Event) {
 }, "worker")
 
 // 3. OVERFLOW HOOK — observes every shed event. Must be cheap & non-blocking.
-sig.OnOverflow(func(dropped Event) { // 🔜 v1.4
+sig.OnOverflow(func(dropped Event) { // 🔭 post-v1.4
     droppedCount.Add(1) // count, never silent
 })
 
 // 4. PRODUCER — fire-and-forget; ALWAYS returns immediately.
 sig.Emit(ctx, e)
 //   ├─ slot free  → listener runs
-//   └─ saturated  → e is dropped, OnOverflow(e) fires, Emit still returns at once
+//   └─ saturated  → (post-v1.4) e is dropped, OnOverflow(e) fires, Emit still returns at once
+//                   (v1.4 today: e PARKS until a slot frees — never dropped)
 ```
 
 The admission check (step 4) is the heart of the pattern: it is where "bounded +
@@ -249,15 +282,17 @@ var (
     stream *signals.AsyncSignal[Metric]
 )
 
+// 🔭 post-v1.4 (H1 hard-bound mode). NOT available in v1.4 — in v1.4 the same bound
+// PARKS excess metrics instead of shedding them. Shown as the intended future shape.
 func Init(collector Collector) {
     // Bound concurrency to what the collector can absorb, and shed the rest.
     stream = signals.NewWithOptions[Metric](&signals.SignalOptions{
-        WorkerPoolSize: 4 * runtime.NumCPU(), // IO-bound: a few per core
-        Overflow:       signals.OverflowDropNewest, // 🔜 v1.4
+        WorkerPoolSize: 4 * runtime.NumCPU(),       // IO-bound: a few per core
+        Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4
     })
 
     // Every drop is counted — never silent.
-    stream.OnOverflow(func(dropped Metric) { // 🔜 v1.4
+    stream.OnOverflow(func(dropped Metric) { // 🔭 post-v1.4
         shed.Add(1)
     })
 
@@ -317,14 +352,15 @@ type Entry struct {
 
 var (
     dropped atomic.Uint64
-    logs    = signals.NewWithOptions[Entry](&signals.SignalOptions{
+    // 🔭 post-v1.4 (H1). NOT in v1.4 — the v1.4 bound parks excess entries, not drops.
+    logs = signals.NewWithOptions[Entry](&signals.SignalOptions{
         WorkerPoolSize: 2 * runtime.NumCPU(),
-        Overflow:       signals.OverflowDropNewest, // 🔜 v1.4
+        Overflow:       signals.OverflowDropNewest, // 🔭 post-v1.4
     })
 )
 
 func init() {
-    logs.OnOverflow(func(Entry) { dropped.Add(1) }) // 🔜 v1.4 — exposed at /healthz
+    logs.OnOverflow(func(Entry) { dropped.Add(1) }) // 🔭 post-v1.4 — exposed at /healthz
     logs.AddListener(func(ctx context.Context, e Entry) {
         _ = sink.Write(ctx, e) // slow when the log backend is degraded
     }, "sink")
@@ -356,8 +392,9 @@ see how many.**
   statistically representative rather than arbitrarily gappy.
 - **Tiered shedding.** Tag events by priority and shed low-priority first, admitting
   high-priority events preferentially within the same bound.
-- **`OverflowError` instead of silent drop.** Route every overflow through the hook
-  with richer context (not just a count) when you need per-drop forensics.
+- **`OverflowError` instead of silent drop (🔭 post-v1.4).** Route every overflow
+  through the hook with richer context (not just a count) when you need per-drop
+  forensics. Like the rest of the overflow policy, this is deferred — not in v1.4.
 
 ## Known Uses
 
