@@ -37,6 +37,16 @@ type Signal[T any] interface {
 	//	fmt.Println("Number of subscribers after adding listener:", count)
 	AddListener(handler SignalListener[T], key ...string) int
 
+	// AddListenerWithErr adds an error-returning listener. It returns the number of
+	// subscribers after adding (or -1 on a duplicate key), like AddListener.
+	//
+	// How the returned error is used depends on the signal type:
+	//   - SyncSignal: the error propagates through TryEmit (which stops on the first
+	//     error); plain Emit discards it.
+	//   - AsyncSignal: on the fire-and-forget Emit path the error is routed to the
+	//     sinks registered via OnError; on EmitAndWaitErr it is collected and returned.
+	AddListenerWithErr(handler SignalListenerErr[T], key ...string) int
+
 	// RemoveListener removes a listener from the signal.
 	//
 	// It returns the number of subscribers after the listener was removed.

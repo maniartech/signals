@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// TestDefaultPanicHandler covers the default panic handler deterministically (the
+// global handler is swapped by other tests, so cover it by direct invocation), and
+// restores it as the active handler afterward to limit cross-test global-state
+// pollution from blackbox tests that set a custom/nil handler.
+func TestDefaultPanicHandler(t *testing.T) {
+	defaultPanicHandler("coverage: default panic handler logs this")
+	handleListenerPanic("coverage: routed via handleListenerPanic")
+	SetPanicHandler(defaultPanicHandler) // restore the library default
+}
+
 func TestAsyncSignal_NoGoroutineLeakAfterEmit(t *testing.T) {
 	base := runtime.NumGoroutine()
 

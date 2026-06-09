@@ -2,6 +2,7 @@ package signals
 
 import (
 	"context"
+	"errors"
 	"log"
 	"runtime"
 	"sync"
@@ -22,6 +23,13 @@ type AsyncSignal[T any] struct {
 	// once. It is nil when no MaxConcurrent bound is configured, in which case
 	// dispatch is unbounded (a goroutine per handler). Set once at construction.
 	slots chan struct{}
+
+	// onErr holds the per-signal error sinks registered via OnError. Errors returned
+	// by AddListenerWithErr handlers on the fire-and-forget Emit path are routed to
+	// every sink. Stored as an immutable slice behind an atomic pointer (copy-on-write
+	// registration under onErrMu) so routing is lock-free and concurrency-safe.
+	onErr   atomic.Pointer[[]func(context.Context, error)]
+	onErrMu sync.Mutex
 }
 
 // DefaultMaxConcurrent returns the recommended MaxConcurrent value (2 × NumCPU) for
@@ -106,6 +114,58 @@ func (s *AsyncSignal[T]) IsEmpty() bool {
 	return s.baseSignal.IsEmpty()
 }
 
+// AddListenerWithErr registers an error-returning listener. Unlike SyncSignal (where
+// errors propagate through TryEmit), on an AsyncSignal a non-nil error returned by
+// the handler is routed to the sinks registered via OnError on the fire-and-forget
+// Emit path, or collected and returned by EmitAndWaitErr. See
+// BaseSignal.AddListenerWithErr for registration details.
+func (s *AsyncSignal[T]) AddListenerWithErr(handler SignalListenerErr[T], key ...string) int {
+	s.ensureBase()
+	return s.baseSignal.AddListenerWithErr(handler, key...)
+}
+
+// OnError registers a sink invoked when an error-returning listener (added via
+// AddListenerWithErr) returns a non-nil error during a fire-and-forget Emit. Multiple
+// sinks may be registered; all are invoked for every error. Sinks run on the handler's
+// own goroutine, so keep them cheap and non-blocking — a blocking sink holds its
+// concurrency slot exactly like a blocking listener would. A panic inside a sink is
+// recovered and routed to SetPanicHandler and does not stop the remaining sinks.
+// OnError is safe for concurrent use. Errors on the EmitAndWaitErr path are returned,
+// not routed here.
+func (s *AsyncSignal[T]) OnError(sink func(ctx context.Context, err error)) {
+	if sink == nil {
+		return
+	}
+	s.onErrMu.Lock()
+	defer s.onErrMu.Unlock()
+	var next []func(context.Context, error)
+	if cur := s.onErr.Load(); cur != nil {
+		next = append(next, *cur...)
+	}
+	next = append(next, sink)
+	s.onErr.Store(&next)
+}
+
+// routeError delivers err to every registered OnError sink. Each sink is isolated:
+// a panicking sink is recovered (routed to SetPanicHandler) and does not prevent the
+// remaining sinks from running.
+func (s *AsyncSignal[T]) routeError(ctx context.Context, err error) {
+	p := s.onErr.Load()
+	if p == nil {
+		return
+	}
+	for _, sink := range *p {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					handleListenerPanic(r)
+				}
+			}()
+			sink(ctx, err)
+		}()
+	}
+}
+
 // AddOnce registers a one-time listener. See BaseSignal.AddOnce for details.
 func (s *AsyncSignal[T]) AddOnce(handler SignalListener[T]) int {
 	s.ensureBase()
@@ -159,7 +219,7 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	if len(subscribers) == 0 {
 		return
 	}
-	go s.dispatch(ctx, payload, subscribers, nil)
+	go s.dispatch(ctx, payload, subscribers, nil, nil)
 }
 
 // EmitAndWait invokes all current listeners asynchronously (each in its own
@@ -183,8 +243,51 @@ func (s *AsyncSignal[T]) EmitAndWait(ctx context.Context, payload T) {
 		return
 	}
 	var wg sync.WaitGroup
-	s.dispatch(ctx, payload, subscribers, &wg)
+	s.dispatch(ctx, payload, subscribers, &wg, nil)
 	waitForOrCancel(ctx, &wg)
+}
+
+// EmitAndWaitErr is EmitAndWait that also collects and returns the errors of any
+// error-returning listeners (added via AddListenerWithErr). It runs all listeners
+// concurrently, waits for completion, and returns the errors.Join of every non-nil
+// error in registration order (deterministic, not completion order); it returns nil
+// iff every listener succeeded. Plain listeners (no error) never contribute.
+//
+// Like EmitAndWait it is ctx-aware: if ctx is canceled or its deadline expires while
+// listeners are still running, EmitAndWaitErr returns ctx.Err() promptly without
+// waiting for the stragglers (and without reading their still-in-progress results).
+func (s *AsyncSignal[T]) EmitAndWaitErr(ctx context.Context, payload T) error {
+	s.ensureBase()
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	subscribers := s.baseSignal.load() // snapshot at call time
+	if len(subscribers) == 0 {
+		return nil
+	}
+	// Each handler writes its error to its own index — distinct slice elements, so no
+	// lock is needed; the read below is ordered after wg completion (happens-before).
+	errs := make([]error, len(subscribers))
+	var wg sync.WaitGroup
+	s.dispatch(ctx, payload, subscribers, &wg, errs)
+
+	if ctx == nil || ctx.Done() == nil {
+		wg.Wait()
+		return errors.Join(errs...)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// All handlers finished — safe to read errs (happens-before via wg).
+		return errors.Join(errs...)
+	case <-ctx.Done():
+		// Canceled: handlers may still be writing errs — do NOT read it (would race).
+		return ctx.Err()
+	}
 }
 
 // waitForOrCancel blocks until wg is done, or (if ctx is cancellable) until ctx is
@@ -212,18 +315,23 @@ func waitForOrCancel(ctx context.Context, wg *sync.WaitGroup) {
 // a semaphore slot is acquired before each handler is started and released when it
 // finishes (on every exit path — including a recovered panic). When wg is non-nil,
 // each started handler is tracked on it.
-func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []keyedListener[T], wg *sync.WaitGroup) {
+func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []keyedListener[T], wg *sync.WaitGroup, errs []error) {
 	// subscribers is an immutable snapshot captured by the caller at emit-call time;
 	// it is never mutated after publication, so iterating it is safe even while a
 	// writer concurrently swaps in a new slice. (Emit/EmitAndWait already returned
 	// early for an already-canceled ctx and an empty subscriber set.)
+	//
+	// errs (non-nil only for EmitAndWaitErr) collects each error-returning handler's
+	// result at its own index. When errs is nil, a non-nil handler error is instead
+	// routed to the OnError sinks.
 	for i := range subscribers {
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
 				return // canceled mid-dispatch: start no further handlers
 			}
 		}
-		if listener := subscribers[i].listener; listener != nil {
+		kl := subscribers[i]
+		if kl.listenerErr != nil || kl.listener != nil {
 			// Acquire a concurrency slot if bounded. When saturated, park here — but
 			// if ctx is cancellable, abort the parked acquire on cancellation rather
 			// than starting a handler after the deadline.
@@ -242,8 +350,9 @@ func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []
 			if wg != nil {
 				wg.Add(1)
 			}
+			idx := i
 			go func() {
-				// Defers run LIFO: the recover runs first (catching a listener
+				// Defers run LIFO: the recover runs first (catching a handler/sink
 				// panic), then the slot is released, then wg.Done — so the slot is
 				// ALWAYS freed, even on panic (no bounded-pool slot leak/deadlock).
 				if wg != nil {
@@ -257,7 +366,17 @@ func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []
 						handleListenerPanic(r)
 					}
 				}()
-				listener(ctx, payload)
+				if kl.listenerErr != nil {
+					if err := kl.listenerErr(ctx, payload); err != nil {
+						if errs != nil {
+							errs[idx] = err // distinct index — no lock needed
+						} else {
+							s.routeError(ctx, err)
+						}
+					}
+					return
+				}
+				kl.listener(ctx, payload)
 			}()
 		}
 	}
