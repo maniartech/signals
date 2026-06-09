@@ -68,7 +68,10 @@ jobs:
           check-latest: true
       - name: Coverage
         run: |
-          go test ./... -coverprofile=cover.out -covermode=atomic
+          # Blackbox tests live in ./tests (package signals_test); -coverpkg attributes
+          # their coverage back to the signals package. Whitebox tests in the root
+          # contribute too. The union must stay at 100%.
+          go test ./... -coverpkg=github.com/maniartech/signals -coverprofile=cover.out -covermode=atomic
           echo "---- per-function coverage ----"
           go tool cover -func=cover.out
           total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}')
