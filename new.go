@@ -1,5 +1,15 @@
 package signals
 
+// Compile-time guarantee that both signal implementations satisfy the full
+// Signal[T] interface. These assertions are the enforcement mechanism for
+// sync/async API symmetry: if a method is added to the interface, or its
+// signature drifts on either type, the build fails here rather than at a
+// distant call site.
+var (
+	_ Signal[any] = (*SyncSignal[any])(nil)
+	_ Signal[any] = (*AsyncSignal[any])(nil)
+)
+
 // NewSync creates a new synchronous signal with the specified payload type.
 // Synchronous signals invoke all listeners sequentially in the same goroutine
 // that calls Emit(), blocking until all listeners have completed.

@@ -257,10 +257,10 @@ func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []keyedListener[T], wg *sync.WaitGroup, errs []error) {
 	// subscribers is an immutable snapshot captured by the caller at emit-call time;
 	// it is never mutated after publication, so iterating it is safe even while a
-	// writer concurrently swaps in a new slice. (Emit/EmitAndWait already returned
+	// writer concurrently swaps in a new slice. (Emit/TryEmit already returned
 	// early for an already-canceled ctx and an empty subscriber set.)
 	//
-	// errs (non-nil only for EmitAndWaitErr) collects each error-returning handler's
+	// errs (non-nil only for TryEmit) collects each error-returning handler's
 	// result at its own index. When errs is nil, a non-nil handler error is instead
 	// routed to the OnError sinks.
 	for i := range subscribers {
