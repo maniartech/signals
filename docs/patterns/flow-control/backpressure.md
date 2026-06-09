@@ -2,8 +2,8 @@
 
 **Family:** Flow-Control
 · **Also Known As:** Flow Control, Producer Throttling
-· **Status:** ✅/🔜 v1.4. The v1.4 backpressure path is `EmitAndWait` (✅) and
-  `EmitAndWaitErr` (🔜 v1.4). The alternative blocking *policy*
+· **Status:** ✅ v1.4. The v1.4 backpressure path is `TryEmit` (✅) — concurrent
+  handlers, waits for all, returns their joined errors. The alternative blocking *policy*
   (`SignalOptions.Overflow = OverflowBlock` on a bounded `Emit`) is 🔭 post-v1.4.
 
 ## Intent
@@ -14,12 +14,12 @@ loss-intolerant counterpart to [Load Shedding](load-shedding.md): same trilemma,
 opposite sacrifice.
 
 > **How v1.4 does backpressure (per [ADR 0001](../../design/0001-async-dispatch-and-error-model.md)).**
-> In v1.4 the backpressure path is **`EmitAndWait` / `EmitAndWaitErr`**: the caller
-> waits for the emission's handlers to complete, so the producer's loop self-throttles
-> to the listeners' throughput and no event is lost. This is the **shipped, lossless**
-> path for loss-intolerant data. A separate `OverflowBlock` *policy* (a bounded `Emit`
-> that blocks for a slot) is **designed but deferred to 🔭 post-v1.4** — use
-> `EmitAndWait` instead today. (Note: v1.4's fire-and-forget `Emit` never drops either —
+> In v1.4 the backpressure path is **`TryEmit`**: the caller waits for the emission's
+> handlers to complete (returning their `errors.Join`'d result), so the producer's loop
+> self-throttles to the listeners' throughput and no event is lost. This is the
+> **shipped, lossless** path for loss-intolerant data. A separate `OverflowBlock` *policy*
+> (a bounded `Emit` that blocks for a slot) is **designed but deferred to 🔭 post-v1.4** —
+> use `TryEmit` instead today. (Note: v1.4's fire-and-forget `Emit` never drops either —
 > it *parks* the excess — but it does not slow the producer, so it is not a backpressure
 > path; loss-intolerant work must wait.)
 
@@ -67,11 +67,11 @@ var Fills = signals.NewWithOptions[Trade](&signals.SignalOptions{
 Fills.AddListener(writeToLedger)
 
 for t := range fills {
-    Fills.EmitAndWait(ctx, t) // ✅ producer WAITS until the fill is durably written
+    Fills.TryEmit(ctx, t) // ✅ producer WAITS until the fill is durably written
 }
 ```
 
-Now when the ledger slows, `EmitAndWait` blocks until the write completes, the
+Now when the ledger slows, `TryEmit` blocks until the write completes, the
 producer's loop self-throttles to the ledger's true throughput, and the channel
 feeding `fills` fills up — pushing the slowdown one step further upstream until the
 whole pipeline runs at the speed of its slowest *durable* stage. The afternoon costs
@@ -105,7 +105,7 @@ trade a ledger must make.
 ```
                        MaxConcurrent = N (optional bound on in-flight handlers)
                        ┌──────────────────────────────────────────────┐
-  Producer ──EmitAndWait──▶ [ run this emission's listeners ]          │
+  Producer ───TryEmit────▶ [ run this emission's listeners ]           │
    (allowed to wait)        │      │                                  │
         ▲   blocks here ────┘      ├─ slot free ─▶ run listener ──┐    │
         │                          │                              │    │
@@ -113,13 +113,13 @@ trade a ledger must make.
         │                                            (producer parked) │
         └──────── returns only after the work completes ───────────────┘
 
-  v1.4 path: EmitAndWait / EmitAndWaitErr — the WAIT is the backpressure (no policy knob).
+  v1.4 path: TryEmit — the WAIT is the backpressure (no policy knob).
   The producer's loop runs at the consumer's true throughput.
   Slowness propagates UPSTREAM: the source channel fills, throttling the origin.
   Trilemma corner sacrificed: producer-never-waits (you chose to wait).
 
   🔭 post-v1.4: an `Overflow = OverflowBlock` policy would give a bounded `Emit` call
-  site the same block-on-saturation semantics. NOT in v1.4 — use EmitAndWait today.
+  site the same block-on-saturation semantics. NOT in v1.4 — use TryEmit today.
 ```
 
 ## Participants
@@ -128,21 +128,20 @@ trade a ledger must make.
 |-------------|----------------|
 | **Producer (Emitter)** | Calls a waiting emit variant; **agrees to be slowed** |
 | **Signal** | Blocks the producer until a slot is free / the work completes |
-| **Concurrency bound** | `MaxConcurrent` (optional) — caps in-flight handlers; with `EmitAndWait` the producer already waits per emission |
-| **Wait path** | `EmitAndWait` / `EmitAndWaitErr` (v1.4) — the caller waits for completion; the wait *is* the backpressure |
+| **Concurrency bound** | `MaxConcurrent` (optional) — caps in-flight handlers; with `TryEmit` the producer already waits per emission |
+| **Wait path** | `TryEmit` (v1.4) — the caller waits for completion and gets the joined errors; the wait *is* the backpressure |
 | **Overflow policy** (🔭 post-v1.4) | `OverflowBlock` — would make a saturated bounded `Emit` wait instead of park/drop. NOT in v1.4 |
 | **Listener** | Processes events durably (e.g. writes the ledger); its speed sets the pace |
 | **Upstream source** | Receives the propagated backpressure (its buffer fills, it slows too) |
 
 ## Collaborations
 
-1. The producer calls `EmitAndWait(ctx, payload)` / `EmitAndWaitErr(ctx, payload)` (or,
-   🔭 post-v1.4, a bounded `Emit` under `OverflowBlock`) and **agrees that this call may
-   block**.
+1. The producer calls `TryEmit(ctx, payload)` (or, 🔭 post-v1.4, a bounded `Emit` under
+   `OverflowBlock`) and **agrees that this call may block**.
 2. The signal runs the listeners concurrently, up to the `MaxConcurrent` bound.
 3. **The producer is parked** until all listeners for this emission complete (under
-   `EmitAndWait`/`EmitAndWaitErr`) — or, under the 🔭 post-v1.4 `OverflowBlock` policy,
-   until a slot frees up. Either way the producer does not proceed.
+   `TryEmit`) — or, under the 🔭 post-v1.4 `OverflowBlock` policy, until a slot frees up.
+   Either way the producer does not proceed.
 4. When the work completes, the call returns and the producer's loop takes its next
    item. Because each iteration waits, the loop **runs at the listeners' throughput**,
    not faster.
@@ -161,7 +160,7 @@ trade a ledger must make.
   flight stays bounded by `MaxConcurrent` — no unbounded backlog.
 - ✓ **Self-pacing pipeline.** The system automatically runs at the speed of its slowest
   durable stage; no manual rate-limiting needed.
-- ✓ **Errors are observable.** `EmitAndWaitErr` returns the listeners' joined errors,
+- ✓ **Errors are observable.** `TryEmit` returns the listeners' joined errors,
   so a failed durable write surfaces to the producer instead of vanishing.
 
 **Liabilities**
@@ -199,23 +198,23 @@ trade a ledger must make.
    without bound (and a future drop policy would instead shed — [Load Shedding](load-shedding.md),
    🔭 post-v1.4). Either way `Emit` cannot make the producer feel the consumer's
    slowness. This isn't a missing feature — it is the logical consequence of the
-   contract. **Loss-intolerant data must not use `Emit`**; it must use `EmitAndWait` /
-   `EmitAndWaitErr` (and, 🔭 post-v1.4, a bounded `Emit` under `OverflowBlock`).
+   contract. **Loss-intolerant data must not use `Emit`**; it must use `TryEmit` (and,
+   🔭 post-v1.4, a bounded `Emit` under `OverflowBlock`).
 
-3. **The way to get backpressure in v1.4 — `EmitAndWait` / `EmitAndWaitErr`:** the
-   producer's loop self-throttles because each iteration *waits for completion* before
-   taking the next item. No special policy required — waiting *is* the backpressure.
-   `EmitAndWaitErr` (🔜 v1.4) additionally returns the listeners' `errors.Join`'d result
-   so durable-write failures surface to the producer.
+3. **The way to get backpressure in v1.4 — `TryEmit`:** the producer's loop
+   self-throttles because each iteration *waits for completion* before taking the next
+   item. No special policy required — waiting *is* the backpressure. `TryEmit` (✅ v1.4)
+   additionally returns the listeners' `errors.Join`'d result so durable-write failures
+   surface to the producer.
 
    - **(🔭 post-v1.4) `SignalOptions.Overflow = OverflowBlock`:** would make an
      otherwise-bounded `Emit` *wait for a free slot* instead of parking, giving an
      `Emit`-shaped call site blocking-on-saturation semantics. Not in v1.4 — use
-     `EmitAndWait` today.
+     `TryEmit` today.
 
 4. **Always pair the (post-v1.4) block policy with a bound.** `OverflowBlock` is
    meaningful only when `MaxConcurrent` is set — the bound is *when* to start waiting.
-   (`EmitAndWait` needs no bound to apply backpressure: it waits per emission
+   (`TryEmit` needs no bound to apply backpressure: it waits per emission
    regardless.) See [Bounded Concurrency](bounded-concurrency.md): bounding is the
    mechanism, blocking is
    the policy layered on it.
@@ -237,7 +236,7 @@ trade a ledger must make.
 7. **Decide what a *bounded* wait does on timeout.** Pure backpressure waits
    indefinitely (correct only if the consumer always eventually drains). In practice you
    usually cap the wait: on timeout, fail loudly (return the error from
-   `EmitAndWaitErr`) and persist the event to a durable fallback (an outbox / WAL)
+   `TryEmit`) and persist the event to a durable fallback (an outbox / WAL)
    rather than dropping it — preserving the zero-loss guarantee through a different
    channel.
 
@@ -253,16 +252,16 @@ trade a ledger must make.
 A minimal skeleton that maps one-to-one onto the **Participants** and the
 **Structure** diagram above — the *Producer* that **agrees to be slowed**, the
 *Signal* with its (optional) *bound*, and the *Listener* whose speed sets the pace. In
-v1.4 the backpressure comes from `EmitAndWaitErr`, not a policy knob. The defining move
+v1.4 the backpressure comes from `TryEmit`, not a policy knob. The defining move
 is that the producer's loop *waits for completion*
 each iteration, so it runs at the consumer's true throughput and the slowness
 propagates upstream. Read this first; the practical examples then apply it.
 
 ```go
 // 1. SIGNAL: an optional concurrency BOUND caps in-flight handlers. In v1.4 the
-//    backpressure comes from EmitAndWaitErr below (the producer waits per emission),
+//    backpressure comes from TryEmit below (the producer waits per emission),
 //    NOT from an overflow policy. `Overflow: OverflowBlock` is 🔭 post-v1.4 and is not
-//    needed here — EmitAndWaitErr already throttles the producer.
+//    needed here — TryEmit already throttles the producer.
 sig := signals.NewWithOptions[Record](&signals.SignalOptions{
     MaxConcurrent: 8, // 🔜 v1.4 — optional: ≤ 8 in-flight handlers per emission
 })
@@ -270,13 +269,13 @@ sig := signals.NewWithOptions[Record](&signals.SignalOptions{
 // 2. LISTENER — the durable work. Its speed sets the pipeline's pace.
 sig.AddListenerWithErr(func(ctx context.Context, r Record) error {
     return writeDurably(ctx, r) // e.g. the ledger / audit log; slow under incident
-}, "sink") // 🔜 v1.4 on async — error-returning listener
+}, "sink") // ✅ v1.4 on async — error-returning listener
 
-// 3. PRODUCER — agrees to be slowed. EmitAndWaitErr blocks until the work completes,
+// 3. PRODUCER — agrees to be slowed. TryEmit blocks until the work completes,
 //    so the loop self-throttles to the consumer's throughput. ZERO loss: nothing is
 //    ever dropped; events are processed possibly later, never not at all.
 for r := range source {
-    if err := sig.EmitAndWaitErr(ctx, r); err != nil { // 🔜 v1.4 — waits; joined errors
+    if err := sig.TryEmit(ctx, r); err != nil { // ✅ v1.4 — waits; joined errors
         persistFallback(r) // preserve zero-loss through a DIFFERENT channel, not by dropping
     }
     //   ├─ slot free  → run listener, return its error
@@ -296,7 +295,7 @@ for r := range source {
 
 A trade-execution engine writes every fill to the **ledger** — the authoritative
 record for settlement and compliance. Losing one is a financial/legal incident, so the
-consuming loop throttles via `EmitAndWaitErr`, and a durable outbox catches anything
+consuming loop throttles via `TryEmit`, and a durable outbox catches anything
 the ledger is too slow to accept within the deadline — zero loss survives even a wedged
 ledger.
 
@@ -324,7 +323,7 @@ type Ledger interface {
 var fills *signals.AsyncSignal[Trade]
 
 func Init(ledger Ledger, outbox Outbox) {
-    // Backpressure comes from EmitAndWaitErr in Publish (the producer waits per fill);
+    // Backpressure comes from TryEmit in Publish (the producer waits per fill);
     // the bound just caps in-flight ledger writes. No overflow policy needed in v1.4.
     fills = signals.NewWithOptions[Trade](&signals.SignalOptions{
         MaxConcurrent: 16, // 🔜 v1.4 — at most 16 ledger writes in flight
@@ -337,14 +336,14 @@ func Init(ledger Ledger, outbox Outbox) {
     _ = outbox // see Publish for the durable fallback
 }
 
-// Publish drives the producer loop. EmitAndWaitErr makes each iteration wait for the
+// Publish drives the producer loop. TryEmit makes each iteration wait for the
 // fill to be durably written, so the loop self-throttles to the ledger's true
 // throughput. A bounded context prevents a wedged ledger from freezing forever; on
 // timeout we persist to a durable outbox so the fill is still NEVER lost.
 func Publish(ctx context.Context, in <-chan Trade, outbox Outbox) {
     for t := range in {
         emitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-        err := fills.EmitAndWaitErr(emitCtx, t) // 🔜 v1.4 — waits; returns joined errors
+        err := fills.TryEmit(emitCtx, t) // ✅ v1.4 — waits; returns joined errors
         cancel()
 
         if err != nil {
@@ -373,7 +372,7 @@ The symptom: during a volatile, high-latency window the ledger falls behind, the
 backlog and memory climb monotonically, and the process is eventually OOM-killed —
 end-of-day reconciliation then surfaces trades that executed in the market but were
 never durably recorded. A compliance and settlement incident either way: the cure is to
-let the producer *wait* (`EmitAndWaitErr`), not to fire-and-forget.
+let the producer *wait* (`TryEmit`), not to fire-and-forget.
 
 ### Practical Example 2 — Order events to an immutable audit log
 
@@ -407,7 +406,7 @@ type AuditStore interface {
 var events *signals.AsyncSignal[OrderEvent]
 
 func Init(store AuditStore) {
-    // Backpressure comes from EmitAndWaitErr in Ingest (the loop waits per entry);
+    // Backpressure comes from TryEmit in Ingest (the loop waits per entry);
     // the bound just caps in-flight audit writes. No overflow policy needed in v1.4.
     events = signals.NewWithOptions[OrderEvent](&signals.SignalOptions{
         MaxConcurrent: 8, // 🔜 v1.4 — at most 8 audit writes in flight
@@ -417,17 +416,17 @@ func Init(store AuditStore) {
     // wait for a slot it is itself holding and deadlock the signal permanently.
     events.AddListenerWithErr(func(ctx context.Context, e OrderEvent) error {
         return store.Append(ctx, e) // its speed sets the ingest loop's pace
-    }, "auditlog") // 🔜 v1.4 on async
+    }, "auditlog") // ✅ v1.4 on async
 }
 
-// Ingest drives the producer loop over incoming order events. EmitAndWaitErr makes
+// Ingest drives the producer loop over incoming order events. TryEmit makes
 // each iteration wait for the durable append, so the loop self-throttles to the audit
 // store's true throughput. The bounded context guards against a wedged store; on
 // timeout the entry is escalated, never silently lost.
 func Ingest(ctx context.Context, in <-chan OrderEvent) error {
     for e := range in {
         emitCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-        err := events.EmitAndWaitErr(emitCtx, e) // 🔜 v1.4 — waits; returns joined errors
+        err := events.TryEmit(emitCtx, e) // ✅ v1.4 — waits; returns joined errors
         cancel()
 
         if err != nil {
@@ -444,18 +443,17 @@ the slowest *durable* stage, and not a single audit entry is lost.
 
 ## Variations
 
-- **`EmitAndWait` self-throttling (the v1.4 path).** The simplest backpressure: just
+- **`TryEmit` self-throttling (the v1.4 path).** The simplest backpressure: just
   wait for completion each iteration. No `OverflowBlock` needed — the wait *is* the
-  backpressure. This is what ships in v1.4.
+  backpressure. This is what ships in v1.4. The returned `errors.Join` also surfaces a
+  failed durable write to the producer so it can retry or escalate, rather than assuming
+  success; if you don't care about the errors, simply ignore the result.
 - **Bounded `Emit` with `OverflowBlock` (🔭 post-v1.4).** Would keep an `Emit` call site
   but block on saturation — handy when migrating an existing fire-and-forget site to
-  loss-intolerant semantics with minimal change. Deferred; use `EmitAndWait` today.
+  loss-intolerant semantics with minimal change. Deferred; use `TryEmit` today.
 - **Bounded wait + durable outbox (shown above).** Cap the wait and, on timeout, write
   to a WAL/outbox instead of dropping. Preserves zero-loss without risking an unbounded
   stall.
-- **Backpressure with error propagation.** Use `EmitAndWaitErr` to surface a failed
-  durable write to the producer so it can retry or escalate, rather than assuming
-  success.
 
 ## Known Uses
 
@@ -476,16 +474,16 @@ the slowest *durable* stage, and not a single audit entry is lost.
 - **[Load Shedding](load-shedding.md)** — the exact opposite trade-off on the same
   trilemma: drop to keep the producer non-blocking, for loss-*tolerant* data (🔭 post-v1.4).
   Backpressure waits to keep zero loss, for loss-*intolerant* data, and ships in v1.4 via
-  `EmitAndWait`/`EmitAndWaitErr`. Pick by whether losing an event is acceptable.
+  `TryEmit`. Pick by whether losing an event is acceptable.
 - **[Bounded Concurrency](bounded-concurrency.md)** — caps in-flight handlers; with
-  `EmitAndWait` the producer already waits per emission so a bound is optional here. The
+  `TryEmit` the producer already waits per emission so a bound is optional here. The
   🔭 post-v1.4 `OverflowBlock` *policy* would layer block-on-saturation onto a bound.
-- **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — `EmitAndWait` is both
+- **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — `TryEmit` is both
   the await-all dispatch mode *and* the natural backpressure path; a loop that awaits
   each emission self-throttles.
 - **[Fire-and-Forget Dispatch](../dispatch/fire-and-forget-dispatch.md)** — the path
   that structurally *cannot* provide backpressure (it promised never to wait); the
   reason loss-intolerant data must avoid it.
-- **[Result Aggregation](../reliability/result-aggregation.md)** — `EmitAndWaitErr`
+- **[Result Aggregation](../reliability/result-aggregation.md)** — `TryEmit`
   collects every listener's joined error, letting a backpressured producer detect and
   react to failed durable writes.

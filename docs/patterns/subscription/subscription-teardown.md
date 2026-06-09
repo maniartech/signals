@@ -199,7 +199,7 @@ not about closing a signal that was never holding a goroutine in the first place
    listener currently executing as part of an in-flight async emit will run to
    completion even after `RemoveListener`/`Reset`. If you must ensure no listener is
    running before releasing a captured resource, drain/quiesce emits first (e.g. stop
-   producing and let outstanding `EmitAndWait` calls return) — see
+   producing and let outstanding `TryEmit` calls return) — see
    [Bounded Concurrency](../flow-control/bounded-concurrency.md) for how in-flight work
    is bounded.
 

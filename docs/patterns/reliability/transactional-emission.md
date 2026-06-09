@@ -174,10 +174,13 @@ rolls forward only while each statement succeeds.
    `SignalListener[T]` added with `AddListener` returns nothing, so it can never abort
    the chain — it always "succeeds" from `TryEmit`'s point of view.
 
-2. **`TryEmit` returns the *first* error and stops; `Emit` discards all errors.** These
-   are the two sync emission verbs and they are deliberately different. Reach for
+2. **Sync `TryEmit` returns the *first* error and stops; `Emit` discards all errors.**
+   These are the two sync emission verbs and they are deliberately different. Reach for
    `TryEmit` whenever the outcome of a step matters; reserve `Emit` for genuinely
-   fire-and-continue notifications where no listener can fail meaningfully.
+   fire-and-continue notifications where no listener can fail meaningfully. (On an
+   *async* signal the same `TryEmit` verb instead runs handlers concurrently and joins
+   *all* their errors — it cannot stop-on-first across goroutines; see
+   [Result Aggregation](result-aggregation.md). This pattern is the *sync* path.)
 
 3. **Registration order is the execution order.** `SyncSignal` preserves registration
    order, so add your steps in the order they must run: validate first, capture last.
@@ -452,8 +455,10 @@ exact rule that blocked publication.
 ## Related Patterns
 
 - **[Result Aggregation](result-aggregation.md)** — the opposite reliability choice:
-  run listeners *concurrently*, let them *all* run, and collect *every* error instead
-  of stopping at the first. Choose it when steps are independent.
+  `TryEmit` on an *async* signal runs listeners *concurrently*, lets them *all* run, and
+  returns the `errors.Join` of *every* failure instead of stopping at the first. (Across
+  goroutines it *cannot* stop-on-first; only the sequential *sync* `TryEmit` described
+  here aborts the chain on the first error.) Choose it when steps are independent.
 - **[Async Error Routing](async-error-routing.md)** — for fire-and-forget async work
   where there is no caller to return an error to; failures go to a per-signal sink.
 - **[Synchronous Sequential Dispatch](../dispatch/synchronous-sequential-dispatch.md)**

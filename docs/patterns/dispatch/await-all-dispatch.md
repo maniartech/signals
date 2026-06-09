@@ -8,8 +8,8 @@
 
 Dispatch all listeners **concurrently** — each in its own goroutine, for speed — but
 **block the caller until every one has completed**. Concurrent execution behind a
-completion barrier: you get parallelism *and* the guarantee that, after `EmitAndWait`
-returns, all side effects are done.
+completion barrier: you get parallelism *and* the guarantee that, after `TryEmit`
+returns, all side effects are done — and, if you want them, every listener's error.
 
 ## Motivation
 
@@ -48,7 +48,7 @@ inventory is still unreserved and payment uncaptured — you confirm orders you 
 fulfill. Fire-and-forget removed the *wait*, but the wait was load-bearing.
 
 Await-All Dispatch is the dispatch mode that keeps the wait while removing the *summing*.
-The listeners run concurrently, and `EmitAndWait` returns only when the last one
+The listeners run concurrently, and `TryEmit` returns only when the last one
 finishes:
 
 ```go
@@ -62,7 +62,7 @@ func init() {
 }
 
 func Confirm(ctx context.Context, o *Order) error {
-    Confirming.EmitAndWait(ctx, o) // all four run in parallel; returns after the LAST finishes
+    _ = Confirming.TryEmit(ctx, o) // all four run in parallel; returns after the LAST finishes
     return confirm(ctx, o)          // safe: every side effect is complete
 }
 ```
@@ -88,16 +88,16 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
   [Synchronous Sequential Dispatch](synchronous-sequential-dispatch.md).
 - **You must not wait at all** (latency-critical hot path, loss-tolerant data) → use
   [Fire-and-Forget Dispatch](fire-and-forget-dispatch.md).
-- **You need each listener's error**, not just "they all finished" → use
-  `EmitAndWaitErr` (🔜 v1.4), documented under
-  [Result Aggregation](../reliability/result-aggregation.md).
+- **You need each listener's error**, not just "they all finished" → that is the *same*
+  `TryEmit`: use its returned `errors.Join`ed error instead of ignoring it, documented
+  under [Result Aggregation](../reliability/result-aggregation.md).
 
 ## Structure
 
 ```
   Caller's goroutine (blocks at the barrier)
   ┌─────────────────────────────────────────────────────────────────┐
-  │  EmitAndWait(ctx, payload)                                       │
+  │  TryEmit(ctx, payload)                                           │
   │     │                                                            │
   │     ├─ ctx canceled? ─yes─▶ run nothing, return                 │
   │     │                                                            │
@@ -121,7 +121,7 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
 
 | Participant | Responsibility |
 |-------------|----------------|
-| **Caller (Emitter)** | Calls `EmitAndWait`; **blocks** at the join barrier; relies on all effects being done afterward |
+| **Caller (Emitter)** | Calls `TryEmit`; **blocks** at the join barrier; relies on all effects being done afterward; may inspect the returned joined error |
 | **AsyncSignal** | Scatters listeners onto goroutines, then joins — returns only when all have completed |
 | **Context** | Checked at entry; if already canceled, no listener runs |
 | **Listener** | Runs concurrently with the others, in arbitrary order; must finish for the barrier to release |
@@ -129,7 +129,7 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
 
 ## Collaborations
 
-1. The caller invokes `EmitAndWait(ctx, payload)`. The signal checks `ctx`: if already
+1. The caller invokes `TryEmit(ctx, payload)`. The signal checks `ctx`: if already
    canceled, **no listener runs** and it returns (canceled-context-skips-all).
 2. Otherwise the signal **scatters** the listeners onto separate goroutines — they begin
    executing concurrently, in **no guaranteed order**.
@@ -139,9 +139,10 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
    returns, the barrier releases.
 5. Control returns to the caller, which is now guaranteed that all listeners have run to
    completion — and can safely act on their combined effects.
-6. **Outcomes are not surfaced** by this method: a listener that returns an error or
-   panics still counts as "completed" for the barrier. To collect errors, use the
-   error-returning sibling `EmitAndWaitErr` (🔜 v1.4) —
+6. **Outcomes are surfaced if you want them.** `TryEmit` waits for every listener and
+   returns their errors joined via `errors.Join`; a listener that returns an error still
+   counts as "completed" for the barrier, and its error rides out in the joined result. If
+   you don't care about errors, ignore the return (`_ = sig.TryEmit(...)`) — see
    [Result Aggregation](../reliability/result-aggregation.md). Panics are recovered and
    routed to the global panic handler ([Panic Isolation](../reliability/panic-isolation.md)).
 
@@ -151,7 +152,7 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
 
 - ✓ **Parallel, not summed.** Wall-clock time is roughly the slowest listener, not the
   total — a large win when listeners are independent and I/O-bound.
-- ✓ **Completion guarantee.** When `EmitAndWait` returns, every listener has finished; the
+- ✓ **Completion guarantee.** When `TryEmit` returns, every listener has finished; the
   next line can rely on all their effects, exactly like the sync pattern.
 - ✓ **A real join point.** Gives you a barrier to drain on — invaluable for graceful
   shutdown and "do all of these, then proceed" semantics.
@@ -163,8 +164,9 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
 - ✗ **The caller waits for the slowest.** One slow or hung listener holds the barrier — and
   the caller — until it (or the context) gives up. Tail latency is dominated by the worst
   listener.
-- ✗ **Outcomes are invisible by default.** Plain `EmitAndWait` tells you "all finished," not
-  "all succeeded." For per-listener errors use `EmitAndWaitErr` (🔜 v1.4) —
+- ✗ **Outcomes are invisible if you discard them.** `TryEmit` tells you "all finished" *and*
+  carries "what failed" in its returned joined error — but ignoring that return (`_ =`)
+  silently throws the failures away. Inspect the return when outcomes matter —
   [Result Aggregation](../reliability/result-aggregation.md).
 - ✗ **No ordering.** Concurrency means arbitrary execution order; don't put inter-listener
   dependencies here.
@@ -186,17 +188,19 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
    `MaxConcurrent`.
 
 2. **Always pass a context with a deadline.** Because the caller waits for the slowest
-   listener, a single hung listener blocks `EmitAndWait` indefinitely unless bounded.
+   listener, a single hung listener blocks `TryEmit` indefinitely unless bounded.
    Pass `context.WithTimeout` and have listeners honor `ctx` so the barrier can release on
    deadline rather than hanging forever. The signal checks `ctx` at entry but cannot
-   forcibly interrupt a listener that ignores it — cancellation is cooperative.
+   forcibly interrupt a listener that ignores it — cancellation is cooperative. (The waiter
+   does return when `ctx` is done even if a handler is still hung.)
 
-3. **Outcome blindness is the key caveat.** `EmitAndWait` returns no value. A listener can
-   fail and you'll still proceed as if it succeeded. When *any* listener's failure should
-   change your control flow, use `EmitAndWaitErr` (🔜 v1.4), which returns the listeners'
-   errors joined via `errors.Join` — see
-   [Result Aggregation](../reliability/result-aggregation.md). Treat plain `EmitAndWait`
-   as "fire-and-join," not "fire-and-verify."
+3. **Outcomes ride out in the return — don't discard them blindly.** `TryEmit` returns the
+   listeners' errors joined via `errors.Join`. If you ignore the return (`_ =`), a listener
+   can fail and you'll still proceed as if it succeeded. When *any* listener's failure should
+   change your control flow, inspect the returned error — see
+   [Result Aggregation](../reliability/result-aggregation.md). Treat `_ = sig.TryEmit(...)`
+   as "fire-and-join," and the error-checked form as "fire-and-verify." Note `TryEmit` does
+   **not** stop at the first failure: it always runs and waits for *all* listeners.
 
 4. **Bound the fan-out for high-fan-in signals.** A signal with many listeners spawns many
    goroutines per emit. For large listener counts or high emit rates, set `MaxConcurrent`
@@ -215,7 +219,7 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
    [Synchronous Sequential Dispatch](synchronous-sequential-dispatch.md) instead.
 
 7. **This is your graceful-shutdown drain.** On shutdown, emit a final "drain" event with
-   `EmitAndWait` (and a generous deadline) to block until every handler has flushed its
+   `TryEmit` (and a generous deadline) to block until every handler has flushed its
    buffers — the one dispatch mode fire-and-forget can't give you because it offers no join.
 
 8. **Don't use it on the latency-critical hot path for loss-tolerant data.** If you don't
@@ -249,21 +253,27 @@ sig.AddListener(func(ctx context.Context, j Job) {
 ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 defer cancel()
 
-// 4. EmitAndWait — SCATTER onto goroutines, then JOIN; returns only when the LAST finishes.
-sig.EmitAndWait(ctx, job)
+// 4. TryEmit — SCATTER onto goroutines, then JOIN; returns only when the LAST finishes.
+err := sig.TryEmit(ctx, job)
 //   ├─ ctx canceled at entry?  → run nothing, return
 //   ├─ scatter A, B            → both run concurrently
 //   └─ join (barrier)          → park caller until A AND B return, THEN return
+//                                (err is the errors.Join of every listener's failure)
 
 // 5. Guaranteed: every listener has completed. Wall-clock ≈ slowest listener, not the sum.
+if err != nil {
+    handleFailure(err) // or ignore the return entirely if outcomes don't matter
+}
 proceed(job)
 ```
 
 The scatter-then-join (step 4) is the heart of the pattern: it buys parallelism (the
 *max*, not the *sum*, of listener durations) while still giving a completion barrier the
-next line can rely on. `EmitAndWait` returns no value — "all finished" is not "all
-succeeded"; use `EmitAndWaitErr` ([Result Aggregation](../reliability/result-aggregation.md))
-when a listener's failure must change control flow.
+next line can rely on. `TryEmit` waits for all listeners *and* returns their errors joined
+via `errors.Join` — so "all finished" carries "what failed" with it. If a caller doesn't
+care about errors it ignores the return (`_ = sig.TryEmit(...)`); inspect it
+([Result Aggregation](../reliability/result-aggregation.md)) when a listener's failure must
+change control flow.
 
 ### Practical Example 1 — Order confirmation (reserve + charge + ship, then respond)
 
@@ -313,7 +323,7 @@ func Confirm(ctx context.Context, repo Repo, o *Order) error {
     ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
     defer cancel()
 
-    Confirming.EmitAndWait(ctx, o) // scatter onto goroutines, join when the last returns
+    _ = Confirming.TryEmit(ctx, o) // scatter onto goroutines, join when the last returns
 
     // Every side effect has completed; safe to flip the order to CONFIRMED.
     o.confirm()
@@ -321,23 +331,24 @@ func Confirm(ctx context.Context, repo Repo, o *Order) error {
 }
 ```
 
-**Contrast — when you actually need each listener's error, plain `EmitAndWait` hides it:**
+**Contrast — discarding `TryEmit`'s return hides a failed listener:**
 
 ```go
-// ❌ EmitAndWait returns nothing — a failed payment capture is invisible here.
-Confirming.EmitAndWait(ctx, o)
+// ❌ Ignoring the return — a failed payment capture is invisible here.
+_ = Confirming.TryEmit(ctx, o)
 return repo.Save(ctx, o) // confirms even if capturePayment failed silently
 
-// ✅ Use the error-returning sibling when failures must abort confirmation.
-if err := Confirming.EmitAndWaitErr(ctx, o); err != nil { // 🔜 v1.4
+// ✅ Inspect the returned (errors.Join'd) error when failures must abort confirmation.
+if err := Confirming.TryEmit(ctx, o); err != nil {
     return fmt.Errorf("confirmation side effects failed: %w", err) // errors.Join'd
 }
 return repo.Save(ctx, o)
 ```
 
 The symptom of the wrong choice in production: orders confirmed despite a failed payment
-capture, because "all listeners finished" was mistaken for "all listeners succeeded." Reach
-for [Result Aggregation](../reliability/result-aggregation.md) when outcomes matter.
+capture, because the `TryEmit` return was discarded and "all listeners finished" was
+mistaken for "all listeners succeeded." Reach for
+[Result Aggregation](../reliability/result-aggregation.md) when outcomes matter.
 
 ### Practical Example 2 — Graceful shutdown drain
 
@@ -391,27 +402,30 @@ func Run(ctx context.Context) {
     drainCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
 
-    Draining.EmitAndWait(drainCtx, Shutdown{Reason: "SIGTERM"}) // all flushes run in parallel; join
+    _ = Draining.TryEmit(drainCtx, Shutdown{Reason: "SIGTERM"}) // all flushes run in parallel; join
     slog.Info("drain complete, exiting")                        // reached only after all finished
 }
 ```
 
-The three flushes overlap (drain takes the slowest, not the sum), and `EmitAndWait`
+The three flushes overlap (drain takes the slowest, not the sum), and `TryEmit`
 returns only when the last has finished — so the process never exits mid-flush. The fresh
 `context.Background()` deadline is deliberate: the request-scoped `ctx` is already
 canceled by the signal, so the drain needs its own bounded budget.
 
 ## Variations
 
-- **`EmitAndWaitErr` (error-aggregating).** Same concurrent scatter-join, but returns every
-  listener's error joined with `errors.Join` so you can fail the operation when any listener
-  fails — [Result Aggregation](../reliability/result-aggregation.md).
+- **Error-aggregating join (the default).** `TryEmit` *is* the error-aggregating form: the
+  same concurrent scatter-join returns every listener's error joined with `errors.Join`, so
+  you can fail the operation when any listener fails —
+  [Result Aggregation](../reliability/result-aggregation.md).
+- **Error-ignoring join.** Want "wait for all but ignore failures"? Same `TryEmit`, discard
+  the return: `_ = sig.TryEmit(ctx, x)`.
 - **Bounded fan-out.** Cap the concurrent listeners with `MaxConcurrent` (🔜 v1.4) for
   high-fan-in signals while keeping the completion guarantee —
   [Bounded Concurrency](../flow-control/bounded-concurrency.md).
 - **Deadline-bounded barrier.** Wrap with `context.WithTimeout` so the join releases on a
   deadline; cooperative listeners abandon their work when `ctx` is done.
-- **Shutdown drain.** A degenerate-but-vital use: emit once with `EmitAndWait` during
+- **Shutdown drain.** A degenerate-but-vital use: emit once with `TryEmit` during
   shutdown to flush all handlers before exit.
 
 ## Known Uses
@@ -420,7 +434,7 @@ canceled by the signal, so the drain needs its own bounded budget.
   shards, block until all respond, merge.
 - **`sync.WaitGroup` / `errgroup.Group`** (Go stdlib & `golang.org/x/sync`) — the canonical
   primitive: launch goroutines, `Wait()` for all; `errgroup` adds the error-join that
-  `EmitAndWaitErr` mirrors.
+  `TryEmit` mirrors.
 - **MapReduce / fork-join frameworks** (Java Fork/Join, parallel streams) — split work,
   process concurrently, join at a barrier.
 - **`Promise.all` / `Future.sequence`** (JS, Scala) — run async tasks concurrently, resolve
@@ -436,9 +450,10 @@ canceled by the signal, so the drain needs its own bounded budget.
 - **[Fire-and-Forget Dispatch](fire-and-forget-dispatch.md)** — also concurrent, but does
   *not* wait. Await-All is fire-and-forget *plus a join barrier*; it is the loss-intolerant
   counterpart that may slow the producer.
-- **[Result Aggregation](../reliability/result-aggregation.md)** — the error-returning sibling
-  (`EmitAndWaitErr`, 🔜 v1.4): same concurrency and barrier, but collects every listener's
-  error. Use it whenever outcomes must change your control flow.
+- **[Result Aggregation](../reliability/result-aggregation.md)** — the error-returning view of
+  this very method: `TryEmit` collects every listener's error via `errors.Join` behind the
+  same concurrency and barrier. Inspect its return whenever outcomes must change your control
+  flow.
 - **[Bounded Concurrency](../flow-control/bounded-concurrency.md)** — cap the concurrent
   fan-out for signals with many listeners or high emit rates.
 - **[Backpressure](../flow-control/backpressure.md)** — the broader flow-control pattern of

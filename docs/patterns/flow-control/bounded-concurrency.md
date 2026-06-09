@@ -63,7 +63,7 @@ var Orders = signals.NewWithOptions[Order](&signals.SignalOptions{
 Orders.AddListener(persistOrder)
 
 for o := range acceptedOrders {
-    Orders.EmitAndWait(ctx, o) // at most 50 concurrent; the loop self-paces
+    Orders.TryEmit(ctx, o) // at most 50 concurrent; the loop self-paces
 }
 ```
 
@@ -71,7 +71,7 @@ Now at most 50 listener invocations run at once. The number of *concurrently
 executing* handlers has a hard ceiling no matter how fast orders arrive, and the
 service survives the spike at a steady, predictable throughput. The *excess* arrivals
 once the bound is saturated are not lost and do not block the caller — in v1.4 they
-**park** cheaply until a slot frees (the `EmitAndWait` loop above also self-paces, so
+**park** cheaply until a slot frees (the `TryEmit` loop above also self-paces, so
 the producer never races ahead of the bound). A *hard ceiling on the parked backlog*
 — dropping the excess ([Load Shedding](load-shedding.md), 🔭 post-v1.4) or blocking on
 a bounded `Emit` ([Backpressure](backpressure.md), 🔭 post-v1.4) — is a separate, later
@@ -271,7 +271,7 @@ decision; bounding the concurrency is the foundation that makes either choice po
    knob. The 🔭 post-v1.4 overflow policies would let you *replace* parking with an
    explicit choice: `Overflow: OverflowDropNewest` → [Load Shedding](load-shedding.md),
    or `Overflow: OverflowBlock` → [Backpressure](backpressure.md). Until then, the
-   loss-intolerant path is `EmitAndWait`/`EmitAndWaitErr` (see Backpressure), and there
+   loss-intolerant path is `TryEmit` (see Backpressure), and there
    is no drop-by-default behavior to opt out of.
 
 10. **Canceled context still short-circuits.** As with every emit variant, if
@@ -300,10 +300,10 @@ sig.AddListener(func(ctx context.Context, j Job) {
     process(j) // a slot is held for exactly the duration of this call, then released
 }, "worker")
 
-// 3. PRODUCER — a self-pacing loop. EmitAndWait blocks until this emission's
+// 3. PRODUCER — a self-pacing loop. TryEmit blocks until this emission's
 //    listeners complete, so the loop runs at the bounded throughput, not faster.
 for j := range jobs {
-    sig.EmitAndWait(ctx, j) // ✅ concurrent listeners, ≤ 8 at once
+    sig.TryEmit(ctx, j) // ✅ concurrent listeners, ≤ 8 at once
     //   ├─ slot acquired → spawn goroutine → run listener → release slot on return
     //   └─ all N held    → next spawn waits for a slot to free (min(N, listeners))
 }
@@ -316,7 +316,7 @@ step 3) is what turns "every handler runs at once" into "at most *N* run at once
 excess parks." In v1.4 a saturated bound **parks** the excess (no drop, no
 caller-block). Replacing parking with an explicit drop or block policy is 🔭 post-v1.4
 — see [Load Shedding](load-shedding.md) and [Backpressure](backpressure.md). For
-lossless backpressure today, drive the bounded signal with `EmitAndWait` as shown.
+lossless backpressure today, drive the bounded signal with `TryEmit` as shown.
 
 ### Practical Example 1 — Order writes bounded to the DB connection pool
 
@@ -363,12 +363,12 @@ func Init(db *sql.DB) {
     }, "persist")
 }
 
-// Publish runs the producer loop. EmitAndWait makes each iteration wait for the
+// Publish runs the producer loop. TryEmit makes each iteration wait for the
 // batch to complete, so the loop naturally self-paces to the bounded throughput
 // instead of racing ahead and queueing unbounded work.
 func Publish(ctx context.Context, accepted <-chan Order) {
     for o := range accepted {
-        persisted.EmitAndWait(ctx, o) // ✅ concurrent listeners, ≤ 50 at once
+        persisted.TryEmit(ctx, o) // ✅ concurrent listeners, ≤ 50 at once
     }
 }
 ```
@@ -430,12 +430,12 @@ func Init(vendor VendorClient) {
     }, "verify")
 }
 
-// Pump drives the producer loop over the event firehose. EmitAndWait makes each
+// Pump drives the producer loop over the event firehose. TryEmit makes each
 // iteration wait for its enrichment to finish, so the loop self-paces to the
 // vendor's true throughput rather than racing ahead and queueing unbounded calls.
 func Pump(ctx context.Context, firehose <-chan Event) {
     for e := range firehose {
-        enriched.EmitAndWait(ctx, e) // ✅ concurrent listeners, ≤ 20 at once
+        enriched.TryEmit(ctx, e) // ✅ concurrent listeners, ≤ 20 at once
     }
 }
 ```
@@ -452,7 +452,7 @@ rate limiter by fanning out faster than the contract allows.
   different limits, split into separate signals each bounded to its own dependency
   rather than one bound that fits none of them well.
 - **Bound + wait = Backpressure (v1.4).** Drive the bounded signal with
-  `EmitAndWait`/`EmitAndWaitErr` so the producer's loop self-throttles to the listeners'
+  `TryEmit` so the producer's loop self-throttles to the listeners'
   throughput — the lossless path that ships in v1.4. See
   [Backpressure](backpressure.md).
 - **Bound + drop = Load Shedding (🔭 post-v1.4).** A future `Overflow: OverflowDropNewest`
@@ -460,7 +460,7 @@ rate limiter by fanning out faster than the contract allows.
   [Load Shedding](load-shedding.md). Not in v1.4.
 - **Bound + block policy (🔭 post-v1.4).** A future `Overflow: OverflowBlock` would make a
   bounded `Emit` call site wait for a slot — see [Backpressure](backpressure.md). Not in
-  v1.4; use `EmitAndWait` today.
+  v1.4; use `TryEmit` today.
 
 ## Known Uses
 
@@ -483,15 +483,15 @@ rate limiter by fanning out faster than the contract allows.
   of parking it. Bounded Concurrency is its prerequisite — there is nothing to shed
   without a bound. Not in v1.4.
 - **[Backpressure](backpressure.md)** — the *wait* path for this bound: drive it with
-  `EmitAndWait`/`EmitAndWaitErr` (v1.4) so the producer self-throttles instead of
+  `TryEmit` (v1.4) so the producer self-throttles instead of
   letting the backlog grow. A bounded `Emit` blocking *policy* (`OverflowBlock`) is
   🔭 post-v1.4. Bounding is the *mechanism*; the saturation behavior is the *policy*.
 - **[Fire-and-Forget Dispatch](../dispatch/fire-and-forget-dispatch.md)** — the
   unbounded default this pattern tames; the bound caps *concurrent* execution while
   keeping fire-and-forget's non-blocking contract (excess parks, never blocks the
   caller).
-- **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — `EmitAndWait` combined
+- **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — `TryEmit` combined
   with a bound gives a self-pacing producer loop, as in the sample above.
 - **[Result Aggregation](../reliability/result-aggregation.md)** — when bounded
   concurrent listeners can each fail, collect their joined errors via
-  `EmitAndWaitErr`.
+  `TryEmit`.

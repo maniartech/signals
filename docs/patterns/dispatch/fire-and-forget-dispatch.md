@@ -87,10 +87,10 @@ That decoupling is not free, and the cost is the whole point of the next section
 - **The next line depends on listeners having run** → use
   [Synchronous Sequential Dispatch](synchronous-sequential-dispatch.md) (ordered, in-caller).
 - **You must wait for all listeners but still want concurrency** → use
-  [Await-All Dispatch](await-all-dispatch.md) (`EmitAndWait`).
+  [Await-All Dispatch](await-all-dispatch.md) (`TryEmit`).
 - **The data is loss-intolerant** (orders, trades, payments, audit *of record*) → use a
   path that can slow the producer down so the backlog cannot grow unbounded —
-  [Backpressure](../flow-control/backpressure.md) via `EmitAndWait`.
+  [Backpressure](../flow-control/backpressure.md) via `TryEmit`.
 - **You need to know whether listeners failed** → fire-and-forget hides outcomes; route
   failures with [Async Error Routing](../reliability/async-error-routing.md).
 
@@ -194,7 +194,7 @@ That decoupling is not free, and the cost is the whole point of the next section
 > without a hard limit (a *load* condition with visible symptoms — growing goroutine /
 > memory counts — not silent data loss). If even an unbounded *background* backlog is
 > unacceptable, this is the wrong dispatch mode — use a path that is allowed to slow the
-> producer down ([Backpressure](../flow-control/backpressure.md) via `EmitAndWait`).
+> producer down ([Backpressure](../flow-control/backpressure.md) via `TryEmit`).
 >
 > **Explicit drop / block / error overflow policies** (a hard backlog cap that sheds,
 > blocks, or errors instead of parking) are **🔭 post-v1.4** — designed but not shipped.
@@ -367,7 +367,7 @@ work (and live goroutines / memory) accumulates with no signal to throttle the p
 Nothing is dropped — but nothing slows down either, which is its own failure mode for an
 order stream. Loss-intolerant, throughput-sensitive data belongs on a path that lets the
 producer slow to the rate handlers complete:
-[Backpressure](../flow-control/backpressure.md) via `EmitAndWait` or
+[Backpressure](../flow-control/backpressure.md) via `TryEmit` or
 [Await-All Dispatch](await-all-dispatch.md).
 
 ### Practical Example 2 — Cache invalidation broadcast on the write path
@@ -428,8 +428,8 @@ func Write(ctx context.Context, repo Repo, key string, val []byte) (int64, error
 The write commits and returns at storage speed; the three cache layers are busted
 concurrently in the background. A purge that's *delayed* under a write burst (parked behind
 the concurrency bound) is harmless — the entry's TTL or the next write covers it in the
-meantime — which is exactly what makes this a fire-and-forget fit rather than an
-`EmitAndWait` one.
+meantime — which is exactly what makes this a fire-and-forget fit rather than a
+`TryEmit` one.
 
 ## Variations
 
@@ -476,7 +476,7 @@ meantime — which is exactly what makes this a fire-and-forget fit rather than 
   handler count with `MaxConcurrent` so fire-and-forget caps execution; covers the
   starvation and self-deadlock caveats that make unbounded the default.
 - **[Backpressure](../flow-control/backpressure.md)** — the alternative for
-  loss-intolerant or throughput-sensitive data: slow the producer (via `EmitAndWait`)
+  loss-intolerant or throughput-sensitive data: slow the producer (via `TryEmit`)
   rather than let a background backlog grow. The right choice when an unbounded background
   backlog is unacceptable.
 - **[Async Error Routing](../reliability/async-error-routing.md)** — recover the outcome

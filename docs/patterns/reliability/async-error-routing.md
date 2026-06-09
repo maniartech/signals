@@ -2,8 +2,8 @@
 
 **Family:** Reliability
 · **Also Known As:** Error Sink, Out-of-Band Error Handler
-· **Status:** 🔜 v1.4 — both `OnError` and error-returning listeners on an
-  `AsyncSignal` (`AddListenerWithErr` on async) land in v1.4
+· **Status:** 🔜 v1.4 — `OnError` (on **both** sync and async signals) and
+  error-returning listeners (`AddListenerWithErr`) land in v1.4
 
 ## Intent
 
@@ -45,7 +45,7 @@ async listener is the same shape of problem** — a failure with no caller to ca
 and it deserves the same solution: route it out-of-band to a registered sink.
 
 `OnError` (🔜 v1.4) provides that sink. Make the listener error-returning
-(`AddListenerWithErr`, 🔜 v1.4 on async), and register a handler:
+(`AddListenerWithErr`, 🔜 v1.4), and register a handler:
 
 ```go
 var UserRegistered = signals.New[User]()
@@ -82,9 +82,11 @@ ever having to wait for it.
 **Avoid it (or prefer another pattern) when:**
 
 - You **waited** for the listeners and want a return value → you have a caller to
-  return to, so use [Result Aggregation](result-aggregation.md) (`EmitAndWaitErr`).
-- The dispatch is **synchronous** → the caller is right there; use
-  [Transactional Emission](transactional-emission.md) (`TryEmit`).
+  return to, so use [Result Aggregation](result-aggregation.md) (`TryEmit`).
+- The dispatch is **synchronous** and you want the error **returned** → the caller is
+  right there; use [Transactional Emission](transactional-emission.md) (`TryEmit`).
+  (On the sync best-effort `Emit` path, errors route to `OnError` instead — `OnError`
+  is on sync signals too.)
 - The failure is a **panic** (an unexpected bug), not a returned error → that is routed
   globally via [Panic Isolation](panic-isolation.md) and `SetPanicHandler`.
 - The event is **loss-tolerant** and you care about *overload* behavior rather than a
@@ -118,8 +120,8 @@ ever having to wait for it.
 |-------------|----------------|
 | **Producer (Emitter)** | Calls `Emit`; returns immediately; is *gone* before any failure occurs |
 | **AsyncSignal** | Dispatches listeners detached; routes a listener's returned error to `OnError` |
-| **Error-returning listener** | `SignalListenerErr[T]` added via `AddListenerWithErr` (🔜 v1.4 on async); returns the failure |
-| **Error sink(s) (`OnError`)** | Per-signal handler(s) `func(ctx, err)`; **multiple may be registered** (additive), each logs/meters/alerts out-of-band (🔜 v1.4) |
+| **Error-returning listener** | `SignalListenerErr[T]` added via `AddListenerWithErr` (🔜 v1.4); returns the failure |
+| **Error sink(s) (`OnError`)** | Per-signal handler(s) `func(ctx, err)` on **both** sync and async signals; **multiple may be registered** (additive), each logs/meters/alerts out-of-band (🔜 v1.4) |
 | **Panic handler** | Separate, *global* sink for panics — the same out-of-band idea for bugs (see [Panic Isolation](panic-isolation.md)) |
 
 ## Collaborations
@@ -156,7 +158,7 @@ ever having to wait for it.
 **Liabilities**
 
 - ✗ **No return value, ever.** The producer fundamentally cannot know the outcome
-  inline; if you *need* the result, you needed `EmitAndWaitErr`, not `Emit`.
+  inline; if you *need* the result, you needed `TryEmit`, not `Emit`.
 - ✗ **No automatic retry.** `OnError` *observes* the failure; it does not re-deliver.
   Retry/DLQ logic must be built on top (see Implementation).
 - ✗ **Ordering and timing are loose.** `OnError` fires whenever a listener finishes
@@ -171,8 +173,8 @@ ever having to wait for it.
 
 ## Implementation
 
-1. **The listener must be error-returning.** Use `AddListenerWithErr` (🔜 v1.4 on
-   async) with a `SignalListenerErr[T]`. A plain `AddListener` listener returns
+1. **The listener must be error-returning.** Use `AddListenerWithErr` (🔜 v1.4)
+   with a `SignalListenerErr[T]`. A plain `AddListener` listener returns
    nothing, so `OnError` can never fire for it — there is no error to route.
 
 2. **Register `OnError` once, at wiring time.** Set it where you construct/initialize
@@ -227,7 +229,7 @@ mechanics; the practical examples then apply it to real problems.
 // 1. ASYNC SIGNAL — fire-and-forget; Emit returns before listeners finish.
 sig := signals.New[Job]()
 
-// 2. ERROR-RETURNING LISTENER (🔜 v1.4 on async) — may fail with NO caller waiting.
+// 2. ERROR-RETURNING LISTENER (🔜 v1.4) — may fail with NO caller waiting.
 sig.AddListenerWithErr(func(ctx context.Context, j Job) error {
     return doWork(ctx, j) // returns later, when the Emit caller is long gone
 }, "worker")
@@ -281,7 +283,7 @@ var (
 func Init(mailer Mailer, hooks WebhookClient, dlq RetryQueue) {
     notifications = signals.New[Event]()
 
-    // Error-returning async listeners (🔜 v1.4). Each may fail with no caller waiting.
+    // Error-returning listeners (🔜 v1.4). Each may fail with no caller waiting.
     notifications.AddListenerWithErr(func(ctx context.Context, e Event) error {
         if err := mailer.Send(ctx, e.UserID, e.Payload); err != nil {
             return fmt.Errorf("email to %s: %w", e.UserID, err) // wrap with identity
@@ -363,7 +365,7 @@ var (
 func Init(index SearchIndex, retries RetryQueue) {
     productEdited = signals.New[ProductChanged]()
 
-    // Error-returning async listener (🔜 v1.4): re-index off the request path.
+    // Error-returning listener (🔜 v1.4): re-index off the request path.
     productEdited.AddListenerWithErr(func(ctx context.Context, c ProductChanged) error {
         if err := index.Upsert(ctx, c.ProductID, c.Revision); err != nil {
             // Wrap with identity so the sink can reconstruct what to retry.
@@ -426,7 +428,7 @@ self-heals instead of one that silently drifts out of sync.
 ## Related Patterns
 
 - **[Result Aggregation](result-aggregation.md)** — the alternative when you *did*
-  wait: `EmitAndWaitErr` returns a joined error to a caller that is still there. Use it
+  wait: async `TryEmit` returns a joined error to a caller that is still there. Use it
   when you have a return path; use Async Error Routing when you do not.
 - **[Panic Isolation](panic-isolation.md)** — the sibling for *unexpected* failures.
   Same out-of-band philosophy, but global (`SetPanicHandler`) and for panics, not

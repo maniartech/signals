@@ -8,13 +8,28 @@
 > listeners finished, change `Emit` → `TryEmit`. Your code still compiles;
 > the behavior changes silently at runtime, so update before upgrading.
 
-- `AsyncSignal.Emit` is now fire-and-forget: it returns immediately without waiting for listeners. Use the new `TryEmit` for the previous blocking behavior.
-- `SyncSignal.Emit` now invokes error-returning listeners (their errors are discarded). `TryEmit` behavior is unchanged.
+- `AsyncSignal.Emit` is now fire-and-forget: it returns immediately without waiting for listeners. Use the new `TryEmit` for the previous blocking behavior (ignore its returned error if you only want to wait for all listeners).
+- `SyncSignal.Emit` now invokes error-returning listeners best-effort; their errors are routed to `OnError` sinks rather than stopping the chain. `TryEmit` still stops at the first listener error or context cancellation and returns it.
 - `Emit` (sync and async) skips all listeners when the provided context is already canceled.
+
+### API Decisions (v1.4)
+
+- **A single `TryEmit` replaces both `EmitAndWait` and `EmitAndWaitErr`.** Earlier
+  v1.4 drafts exposed two separate "wait for all" methods; these were merged into
+  one `TryEmit`. To wait for all listeners but ignore errors, call `TryEmit` and
+  discard the returned error.
+- `TryEmit` on `AsyncSignal` runs handlers concurrently, waits for all of them,
+  and returns every failure joined via `errors.Join`. It honors context liveness:
+  the waiter returns at the context deadline even if a handler is still running.
 
 ### Added
 
-- `AsyncSignal.TryEmit` — schedules listeners concurrently and waits for completion.
+- `AsyncSignal.TryEmit` — schedules listeners concurrently, waits for completion, and returns joined listener errors (`errors.Join`).
+- **`TryEmit` is now part of the `Signal[T]` interface** for both `SyncSignal` and `AsyncSignal`, so it can be called through the interface type.
+- **`OnError(func(ctx, err error))` is now available on `SyncSignal` as well** (it was already on `AsyncSignal`) and is exposed on the `Signal[T]` interface. Multiple additive sinks per signal are supported; sinks receive error-returning listeners' errors on the `Emit` path.
+- **Registration is now a symmetric 2x2 matrix** on the `Signal[T]` interface: `AddListener`, `AddListenerWithErr`, `AddOnce`, and `AddOnceWithErr`. Each takes an optional variadic `key` (absent/empty = unkeyed; a duplicate key returns `-1`).
+  - `AddOnce` gained the optional `key` argument, and the separate `AddOnceWithKey` was removed/folded into it.
+  - `AddOnceWithErr` is new: an error-returning one-shot listener that is consumed on attempt.
 - `signals.SetPanicHandler` — configures how recovered async-listener panics are reported (default: standard library `log`).
 - Zero-value `SyncSignal` / `AsyncSignal` are now safe to use without constructors.
 - `SignalOptions.GrowthFunc` is now honored when the subscriber list grows.

@@ -19,7 +19,7 @@
 > the way to give the parked backlog a hard memory ceiling. Everything below tagged
 > 🔭 post-v1.4 (`OverflowDropNewest`, `OnOverflow`, `SignalOptions.Overflow`,
 > `OverflowError`) is **not available in v1.4**. For lossless behavior today, use
-> [Backpressure](backpressure.md) (`EmitAndWait`/`EmitAndWaitErr`); to bound *concurrent*
+> [Backpressure](backpressure.md) (`TryEmit`); to bound *concurrent*
 > execution today, use [Bounded Concurrency](bounded-concurrency.md) (which parks, does
 > not drop). Read this pattern to understand the *intended* shedding policy, not v1.4
 > runtime behavior.

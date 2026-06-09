@@ -78,7 +78,7 @@ registers once: the second `AddListener` with an existing key is a no-op that re
   or replaced — an anonymous `AddListener(handler)` is fine and simpler.
 - You want a listener that **removes itself after one fire** → use
   [One-Shot Subscription](one-shot-subscription.md), which manages the lifecycle for
-  you (though `AddOnceWithKey` lets you combine both).
+  you (though a keyed `AddOnce` (`AddOnce(h, key)`) lets you combine both).
 
 ## Structure
 
@@ -388,8 +388,8 @@ never get collected — a leak with no clean fix short of `Reset()`.
 ## Related Patterns
 
 - **[One-Shot Subscription](one-shot-subscription.md)** — for a listener that removes
-  itself after a single fire; `AddOnceWithKey` (🔜 v1.4) combines one-shot semantics
-  with a key.
+  itself after a single fire; a keyed `AddOnce` (🔜 v1.4, `AddOnce(h, key)`) combines
+  one-shot semantics with a key.
 - **[Subscription Teardown](subscription-teardown.md)** — the lifecycle discipline that
   *uses* keys (and `Reset`) to remove listeners and avoid leaks. Keying is what makes
   targeted teardown possible.

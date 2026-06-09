@@ -89,7 +89,7 @@ alert to fix — a bug report instead of an outage.
 ## Structure
 
 ```
-  Emitter ──Emit / EmitAndWait──▶ AsyncSignal
+  Emitter ──Emit / TryEmit──▶ AsyncSignal
                                       │
               ┌───────────────────────┼───────────────────────┐
               ▼                        ▼                        ▼
@@ -118,7 +118,7 @@ alert to fix — a bug report instead of an outage.
 
 ## Collaborations
 
-1. The emitter calls `Emit` (or `EmitAndWait`). The signal dispatches each listener.
+1. The emitter calls `Emit` (or `TryEmit`). The signal dispatches each listener.
 2. A faulty listener panics partway through its work.
 3. The signal's recovery boundary catches the panic with `recover()` — it **never
    propagates** out of the dispatch machinery, so the process is not crashed.
@@ -185,9 +185,8 @@ alert to fix — a bug report instead of an outage.
    distinction of the Reliability family. A *panic* is an **unexpected bug** with no
    meaningful per-signal semantics, so it routes to one global `SetPanicHandler`. An
    *expected failure* is a returned `error`, routed **per signal** via `OnError`
-   ([Async Error Routing](async-error-routing.md)) or returned via `TryEmit` /
-   `EmitAndWaitErr`. Use a returned error for things you anticipate; reserve panics for
-   genuine bugs.
+   ([Async Error Routing](async-error-routing.md)) or returned via `TryEmit`. Use a
+   returned error for things you anticipate; reserve panics for genuine bugs.
 
 6. **Recovery is automatic for async; sync surfaces to the caller.** Async listener
    panics are recovered and routed because there is no caller to unwind into (the same
@@ -230,7 +229,7 @@ sig.AddListener(func(ctx context.Context, e Event) {
     risky(ctx, e) // may panic — a bug, not an expected error
 }, "risky")
 
-// 4. EMITTER — fire-and-forget (or EmitAndWait); never sees a listener's panic.
+// 4. EMITTER — fire-and-forget (or TryEmit); never sees a listener's panic.
 sig.Emit(ctx, e)
 //   ├─ "safe"  runs normally
 //   ├─ "risky" panics → recover() at the boundary → SetPanicHandler(recovered)

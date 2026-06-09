@@ -2,7 +2,7 @@
 
 **Family:** Subscription Lifecycle
 · **Also Known As:** Once Listener, Self-Unsubscribing Handler
-· **Status:** 🔜 v1.4 (`AddOnce`, `AddOnceWithKey`)
+· **Status:** 🔜 v1.4 (`AddOnce`, `AddOnceWithErr`)
 
 ## Intent
 
@@ -77,7 +77,8 @@ duplicate migration, no hand-rolled flag, no race.
 - You need the listener to fire a **bounded number > 1** of times — one-shot is
   exactly one; for N-times you must track a counter yourself.
 - You need to remove the listener **before** it ever fires under a known name →
-  prefer `AddOnceWithKey` so you retain a handle for early cancellation.
+  pass a key to `AddOnce` so you retain a handle for early cancellation
+  (e.g. `AddOnce(handler, key)`).
 
 ## Structure
 
@@ -107,16 +108,16 @@ duplicate migration, no hand-rolled flag, no race.
 | Participant | Responsibility |
 |-------------|----------------|
 | **Producer (Emitter)** | Emits the recurring event, possibly concurrently |
-| **`AddOnce` / `AddOnceWithKey`** (🔜 v1.4) | Registers the handler wrapped in a one-shot guard |
+| **`AddOnce`** (🔜 v1.4) | Registers the handler wrapped in a one-shot guard; takes an optional key |
 | **One-shot guard** | An atomic flag claimed by the first emit; makes "fire once" race-safe |
 | **Wrapped handler** | The user's logic; invoked by exactly one emit |
 | **Signal** | Removes the wrapped listener after it has fired |
-| **Key** (optional, `AddOnceWithKey`) | Lets the one-shot listener also be removed *before* it fires |
+| **Key** (optional) | Passed to keyed `AddOnce`; lets the one-shot listener also be removed *before* it fires |
 
 ## Collaborations
 
-1. The caller registers a handler via `AddOnce(handler)` (or
-   `AddOnceWithKey(handler, key)`). The library installs a **wrapper** that owns an
+1. The caller registers a handler via `AddOnce(handler)` (or keyed
+   `AddOnce(handler, key)`). The library installs a **wrapper** that owns an
    atomic one-shot guard, plus the user's handler.
 2. One or more emits reach the wrapper, possibly **concurrently** from different
    goroutines.
@@ -139,7 +140,7 @@ duplicate migration, no hand-rolled flag, no race.
   leak from a listener that has outlived its purpose.
 - ✓ **Intent is explicit.** `AddOnce` states "this runs once" at the call site, where a
   reader can see it — far clearer than a hidden flag.
-- ✓ **Composes with keys.** `AddOnceWithKey` keeps a handle so the one-shot can also be
+- ✓ **Composes with keys.** A keyed `AddOnce` keeps a handle so the one-shot can also be
   cancelled *before* it fires.
 
 **Liabilities**
@@ -167,11 +168,12 @@ duplicate migration, no hand-rolled flag, no race.
    N times before any removal takes effect. The library's guard closes this window by
    gating on execution, not on registration.
 
-3. **`AddOnce` vs `AddOnceWithKey`.** `AddOnce` is anonymous: fire-once-then-vanish with
-   no handle. `AddOnceWithKey` assigns a key so you can `RemoveListener(key)` to cancel
-   the one-shot *before* it ever fires (e.g. on shutdown while still waiting for the
-   event). Prefer the keyed form whenever the armed listener might need to be torn down
-   early — see [Keyed Subscription](keyed-subscription.md).
+3. **Unkeyed vs keyed `AddOnce`.** `AddOnce(handler)` is anonymous: fire-once-then-vanish
+   with no handle. Passing a key — `AddOnce(handler, key)` — assigns a name so you can
+   `RemoveListener(key)` to cancel the one-shot *before* it ever fires (e.g. on shutdown
+   while still waiting for the event); the key also dedup's the registration. Prefer the
+   keyed form whenever the armed listener might need to be torn down early — see
+   [Keyed Subscription](keyed-subscription.md).
 
 4. **The handler runs under the dispatch semantics of its signal.** On an
    `AsyncSignal` the single fire runs concurrently with other listeners and its panics
@@ -199,7 +201,7 @@ duplicate migration, no hand-rolled flag, no race.
 
 A minimal skeleton that maps one-to-one onto the **Participants** and the
 **Structure** diagram above — the *Producer* emitting (possibly concurrently), the
-`AddOnce`/`AddOnceWithKey` registration that wraps the handler in the *one-shot
+`AddOnce` registration (unkeyed or keyed) that wraps the handler in the *one-shot
 guard*, the single *winner* that runs the handler, and the *self-removal*. Read this
 first to see the mechanics; the practical examples then apply it to real problems.
 
@@ -214,7 +216,7 @@ sig.AddOnce(func(ctx context.Context, e Event) { // 🔜 v1.4
 
 // 2b. KEYED one-shot: same exactly-once guarantee, plus a handle so it can be
 //     cancelled BEFORE it ever fires (e.g. on shutdown while still waiting).
-sig.AddOnceWithKey(func(ctx context.Context, e Event) { // 🔜 v1.4
+sig.AddOnce(func(ctx context.Context, e Event) { // 🔜 v1.4
     initOnce(e)
 }, "domain/once-on-first")
 
@@ -236,8 +238,9 @@ hand-rolled self-removal cannot.
 
 A database client must run its schema migration the **first** time the pool
 establishes a connection and never again — but reconnect storms open several
-connections at once, so the migration listener can be hit concurrently. `AddOnceWithKey`
-makes it exactly-once and cancellable if the process shuts down before ever connecting.
+connections at once, so the migration listener can be hit concurrently. A keyed
+`AddOnce` makes it exactly-once and cancellable if the process shuts down before ever
+connecting.
 
 ```go
 package db
@@ -260,7 +263,7 @@ var Connected = signals.New[Conn]()
 // then removes itself. Even if the pool opens five connections simultaneously,
 // runMigration executes exactly once — the atomic guard admits a single winner.
 func ArmMigration(migrate func(context.Context, Conn) error) {
-    Connected.AddOnceWithKey(func(ctx context.Context, c Conn) { // 🔜 v1.4
+    Connected.AddOnce(func(ctx context.Context, c Conn) { // 🔜 v1.4
         if err := migrate(ctx, c); err != nil {
             // handle/log; the one-shot has already been consumed by this fire
         }
@@ -307,7 +310,7 @@ var Restocked = signals.New[Restock]()
 // restock of the same SKU does nothing. Keyed so the shopper can cancel the watch.
 func WatchOnce(shopperID, sku string, notify func(context.Context, string)) {
     key := fmt.Sprintf("restock-watch/%s/%s", shopperID, sku)
-    Restocked.AddOnceWithKey(func(ctx context.Context, r Restock) { // 🔜 v1.4
+    Restocked.AddOnce(func(ctx context.Context, r Restock) { // 🔜 v1.4
         if r.SKU != sku {
             return // not the SKU this shopper is waiting on
         }
@@ -342,8 +345,13 @@ reproduces under single-threaded testing.
 
 ## Variations
 
-- **Keyed one-shot (cancellable).** `AddOnceWithKey` when the armed listener might need
-  early teardown (shutdown before the event ever fires).
+- **Keyed one-shot (cancellable).** Pass a key to `AddOnce` (`AddOnce(handler, key)`)
+  when the armed listener might need early teardown (shutdown before the event ever
+  fires).
+- **Error-returning one-shot.** `AddOnceWithErr` is the error-returning one-shot — same
+  fire-once semantics, but the handler returns an `error` that routes to `OnError` on
+  `Emit` or is returned by `TryEmit`. It is "consumed on attempt": it fires and
+  self-removes even when it returns an error. (Like `AddOnce`, it takes an optional key.)
 - **Once-per-epoch.** Re-call `AddOnce` at the boundary of each epoch (per session, per
   reconnect cycle) to get "once within this window" semantics without weakening the
   per-arming exactly-once guarantee.
@@ -366,7 +374,7 @@ reproduces under single-threaded testing.
 
 ## Related Patterns
 
-- **[Keyed Subscription](keyed-subscription.md)** — `AddOnceWithKey` combines one-shot
+- **[Keyed Subscription](keyed-subscription.md)** — a keyed `AddOnce` combines one-shot
   cardinality with a removable handle; keys are how you cancel an armed one-shot early.
 - **[Subscription Teardown](subscription-teardown.md)** — one-shot is *self*-teardown
   for the single-fire case; the teardown pattern covers the general lifecycle. A

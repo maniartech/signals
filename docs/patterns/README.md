@@ -79,7 +79,7 @@ The levers v1.4 actually ships:
   run concurrently. A `MaxConcurrent` bound caps *concurrent* handlers; excess **parks**
   (no drop, no caller-block). Unbounded by default (a bound can starve long-running
   listeners — see [Bounded Concurrency](flow-control/bounded-concurrency.md)).
-- **`TryEmit` / `TryEmit`** — allowed to make the caller wait ⇒ the natural
+- **`TryEmit`** — allowed to make the caller wait ⇒ the natural
   **backpressure** path: the producer's own loop self-throttles to the rate handlers
   complete, and no event is lost. This is the path for loss-intolerant work.
 
@@ -146,29 +146,28 @@ Reset()                                                        // ✅ remove all
 Len() int                                                      // ✅
 IsEmpty() bool                                                 // ✅
 
-AddOnce(handler SignalListener[T]) int                         // 🔜 v1.4 — fire once, auto-remove
-AddOnceWithKey(handler SignalListener[T], key string) int      // 🔜 v1.4
+AddOnce(handler SignalListener[T], key ...string) int          // 🔜 v1.4 — fire once, auto-remove
+AddOnceWithErr(handler SignalListenerErr[T], key ...string) int // 🔜 v1.4 — error-returning one-shot
 Keys() []string                                                // 🔜 v1.4 — snapshot of keys
 HasKey(key string) bool                                        // 🔜 v1.4 — O(1) existence check
 ```
 
 ### Emission — SyncSignal
 ```go
-Emit(ctx context.Context, payload T)            // ✅ sequential, blocks; discards listener errors
+Emit(ctx context.Context, payload T)            // ✅ sequential, blocks; routes listener errors to OnError
 TryEmit(ctx context.Context, payload T) error   // ✅ sequential, stops on first error/cancel
 ```
 
 ### Emission — AsyncSignal
 ```go
 Emit(ctx context.Context, payload T)                  // ✅ fire-and-forget; one dispatcher goroutine, returns immediately
-TryEmit(ctx context.Context, payload T)           // ✅ concurrent handlers, blocks until all done
-TryEmit(ctx context.Context, payload T) error  // 🔜 v1.4 — concurrent, waits, errors.Join'd
+TryEmit(ctx context.Context, payload T) error         // 🔜 v1.4 — concurrent handlers, waits for all, errors.Join'd
 ```
 
 ### Failure hooks
 ```go
 signals.SetPanicHandler(func(recovered any))          // ✅ global; routes recovered async panics
-(*AsyncSignal[T]).OnError(func(ctx context.Context, err error)) // 🔜 v1.4 — per-signal async error sink (multiple allowed)
+(Signal[T]).OnError(func(ctx context.Context, err error))     // 🔜 v1.4 — per-signal error sink (sync+async, multiple allowed)
 // (*AsyncSignal[T]).OnOverflow(func(dropped T))       // 🔭 post-v1.4 — only meaningful with a drop policy (not in v1.4)
 ```
 
@@ -177,7 +176,9 @@ signals.SetPanicHandler(func(recovered any))          // ✅ global; routes reco
   (lazy `sync.Once` init). ✅
 - **Canceled context skips all listeners:** if `ctx.Err() != nil` at emit time, no
   listener runs (all emit variants). ✅
-- **Sync stops mid-chain on cancel:** `Emit`/`TryEmit` check `ctx` between listeners. ✅
+- **Sync checks `ctx` between listeners:** `Emit` runs all listeners best-effort (routing
+  errors to `OnError`) but stops if `ctx` is canceled mid-chain; `TryEmit` stops on the
+  first listener error or cancel and returns it. ✅
 - **Async panics are recovered**, never crash the process, routed to the panic
   handler. ✅
 - **Keyed dedup:** adding a second listener with an existing key returns `-1` and does

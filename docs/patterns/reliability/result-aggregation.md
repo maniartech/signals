@@ -2,8 +2,8 @@
 
 **Family:** Reliability
 · **Also Known As:** Error Join, Gather-Errors
-· **Status:** 🔜 v1.4 — `EmitAndWaitErr` and error-returning listeners on an
-  `AsyncSignal` (`AddListenerWithErr` on async) land in v1.4
+· **Status:** 🔜 v1.4 — async `TryEmit` and error-returning listeners
+  (`AddListenerWithErr`) land in v1.4
 
 ## Intent
 
@@ -23,8 +23,8 @@ on-call" means fanning a single alert out to three independent channels:
 These deliveries are independent and slow (three separate network calls), so you want
 them to run **in parallel** — but you also critically need to know **which ones
 failed**, because a partially delivered page is dangerous: if PagerDuty silently failed
-and only Slack worked, on-call may never wake up. The naive concurrent approach
-(`EmitAndWait`) gets the parallelism but throws the outcomes away:
+and only Slack worked, on-call may never wake up. The naive approach registers plain
+listeners that return nothing observable, so the outcomes are thrown away:
 
 ```go
 var Alert = signals.New[Incident]() // AsyncSignal
@@ -32,19 +32,21 @@ Alert.AddListener(postSlack)        // returns nothing observable
 Alert.AddListener(triggerPagerDuty)
 Alert.AddListener(sendEmail)
 
-Alert.EmitAndWait(ctx, incident) // ✅ runs all 3 concurrently, waits — but no errors
+Alert.TryEmit(ctx, incident) // ✅ runs all 3 concurrently, waits — but plain
+                             //   listeners report no error, so nothing surfaces
 ```
 
-`EmitAndWait` runs the three concurrently and blocks until all finish, which is exactly
-the timing you want. But it returns **nothing**: if PagerDuty's API was down, you have
-no idea. The page looks "sent." This is the worst of both worlds for a critical alert —
-you *waited* (so you could have learned the truth) but you threw the truth away.
+With plain `AddListener` listeners, the three run concurrently and the call blocks until
+all finish, which is exactly the timing you want. But the listeners return **nothing**:
+if PagerDuty's API was down, you have no idea. The page looks "sent." This is the worst
+of both worlds for a critical alert — you *waited* (so you could have learned the truth)
+but you threw the truth away.
 
 You could give each listener its own goroutine, error channel, and `sync.WaitGroup` by
 hand — but that is exactly the concurrency boilerplate (and the bugs that come with it)
 that a signal exists to remove. Result Aggregation packages it: make the listeners
-error-returning (`AddListenerWithErr`, 🔜 v1.4 on async) and emit with
-**`EmitAndWaitErr`** (🔜 v1.4):
+error-returning (`AddListenerWithErr`, 🔜 v1.4) and emit with **`TryEmit`** (🔜 v1.4 on
+async), which fans out, waits for all, and returns the `errors.Join` of every failure:
 
 ```go
 var Alert = signals.New[Incident]()
@@ -52,7 +54,7 @@ Alert.AddListenerWithErr(postSlack, "slack")
 Alert.AddListenerWithErr(triggerPagerDuty, "pagerduty")
 Alert.AddListenerWithErr(sendEmail, "email")
 
-if err := Alert.EmitAndWaitErr(ctx, incident); err != nil { // 🔜 v1.4
+if err := Alert.TryEmit(ctx, incident); err != nil { // 🔜 v1.4
     // err is the errors.Join of EVERY channel that failed — all of them, not just the first.
     log.Error("alert partially failed", "err", err)
     // Inspect and retry only the channels that failed:
@@ -81,19 +83,20 @@ or retry **just that channel**.
 **Avoid it (or prefer another pattern) when:**
 
 - The steps are an **ordered pipeline** where a later step must not run after an earlier
-  failure → [Transactional Emission](transactional-emission.md) (`TryEmit`,
+  failure → [Transactional Emission](transactional-emission.md) (*sync* `TryEmit`,
   stop-on-first-error).
 - You **fire-and-forget** and have no caller to return to → route failures via
   [Async Error Routing](async-error-routing.md) (`OnError`).
 - You want concurrency and waiting but **don't care about errors** →
-  [Await-All Dispatch](../dispatch/await-all-dispatch.md) (`EmitAndWait`).
+  [Await-All Dispatch](../dispatch/await-all-dispatch.md) (async `TryEmit`, ignoring the
+  returned error).
 - The work is **loss-tolerant** and you must not block the producer →
   [Load Shedding](../flow-control/load-shedding.md).
 
 ## Structure
 
 ```
-  Caller ──EmitAndWaitErr(ctx, payload)──▶ AsyncSignal
+  Caller ──TryEmit(ctx, payload)──▶ AsyncSignal
                                               │  (fan-out: all listeners start concurrently)
             ┌──────────────────┬──────────────┴───────────────┐
             ▼                  ▼                               ▼
@@ -112,20 +115,21 @@ or retry **just that channel**.
 
 | Participant | Responsibility |
 |-------------|----------------|
-| **Caller (Emitter)** | Calls `EmitAndWaitErr`; **blocks** until all listeners finish; receives the joined error |
+| **Caller (Emitter)** | Calls async `TryEmit`; **blocks** until all listeners finish; receives the joined error |
 | **AsyncSignal** | Fans listeners out concurrently, waits for all, joins their errors with `errors.Join` |
-| **Error-returning listeners** | `SignalListenerErr[T]` via `AddListenerWithErr` (🔜 v1.4 on async); each runs independently, returns `nil` or an error |
+| **Error-returning listeners** | `SignalListenerErr[T]` via `AddListenerWithErr` (🔜 v1.4); each runs independently, returns `nil` or an error |
 | **Joined error** | The single `error` returned — `errors.Join` of all non-nil results; inspectable with `errors.Is`/`errors.As` |
 | **Context** | Cancellation/deadline bound on the whole fan-out |
 
 ## Collaborations
 
-1. The caller invokes `EmitAndWaitErr(ctx, payload)` and **blocks**.
+1. The caller invokes async `TryEmit(ctx, payload)` and **blocks**.
 2. The signal starts **all** error-returning listeners concurrently — there is no
    ordering guarantee between them.
 3. Each listener runs to completion independently and returns `nil` or an error.
    Crucially, **one listener's failure does not stop the others** — every listener gets
-   its chance (unlike the stop-on-first-error of `TryEmit`).
+   its chance. Across goroutines it *cannot* stop at the first error, so async `TryEmit`
+   waits for all and joins them (unlike the stop-on-first-error of *sync* `TryEmit`).
 4. The signal **waits for all** listeners to finish.
 5. The signal collects the results and returns `errors.Join(results...)`: `nil` if all
    succeeded, otherwise a single error wrapping every non-nil failure (nils are
@@ -164,9 +168,9 @@ or retry **just that channel**.
 
 ## Implementation
 
-1. **Listeners must be error-returning.** Use `AddListenerWithErr` (🔜 v1.4 on async).
+1. **Listeners must be error-returning.** Use `AddListenerWithErr` (🔜 v1.4).
    A plain `AddListener` listener returns nothing and cannot contribute to the joined
-   error — its failures are invisible to `EmitAndWaitErr`.
+   error — its failures are invisible to `TryEmit`.
 
 2. **Understand `errors.Join` semantics.** `errors.Join(errs...)` returns `nil` if
    every argument is `nil`; otherwise it returns a single error whose `Error()` string
@@ -188,8 +192,10 @@ or retry **just that channel**.
 
 5. **Bound the wait with a context deadline.** Because you wait for the slowest
    listener, a hung target can stall the caller indefinitely. Pass a `ctx` with a
-   timeout so the emission cannot outlive its usefulness; listeners must honor `ctx`
-   internally for the deadline to take effect on in-flight work.
+   timeout: async `TryEmit`'s waiter returns at the context deadline **even if a handler
+   is still hung**, so the caller is never pinned to a stuck listener. A handler that
+   ignores `ctx` keeps running detached in the background, so listeners should still
+   honor `ctx` internally for the deadline to take effect on their in-flight work.
 
 6. **Synchronize shared state.** Listeners run concurrently. If two of them write the
    same map, counter, or buffer, guard it (mutex/atomic) or give each its own state and
@@ -201,7 +207,7 @@ or retry **just that channel**.
    listeners still all run and are still all awaited — the pool just limits how many run
    at the same instant. Aggregation semantics are unchanged; only the scheduling is.
 
-8. **Errors vs. panics.** `EmitAndWaitErr` aggregates *returned errors*. A listener that
+8. **Errors vs. panics.** Async `TryEmit` aggregates *returned errors*. A listener that
    *panics* is recovered and routed to the global panic handler
    ([Panic Isolation](panic-isolation.md)); it does not (necessarily) appear in the
    joined error. Treat an expected failure (return an error) and a bug (panic)
@@ -220,7 +226,7 @@ mechanics; the practical examples then apply it to real problems.
 // 1. ASYNC SIGNAL — listeners will run CONCURRENTLY (no ordering guarantee).
 sig := signals.New[Task]()
 
-// 2. ERROR-RETURNING LISTENERS (🔜 v1.4 on async) — independent; each returns nil or
+// 2. ERROR-RETURNING LISTENERS (🔜 v1.4) — independent; each returns nil or
 //    an error. One listener's failure does NOT stop the others. Wrap with identity
 //    so the joined error tells you WHICH target failed.
 sig.AddListenerWithErr(func(ctx context.Context, t Task) error {
@@ -230,8 +236,8 @@ sig.AddListenerWithErr(func(ctx context.Context, t Task) error {
     return fmt.Errorf("target-b: %w", targetB(ctx, t))
 }, "target-b")
 
-// 3. CALLER — EmitAndWaitErr fans out, WAITS for all, returns errors.Join of failures.
-err := sig.EmitAndWaitErr(ctx, t) // 🔜 v1.4
+// 3. CALLER — async TryEmit fans out, WAITS for all, returns errors.Join of failures.
+err := sig.TryEmit(ctx, t) // 🔜 v1.4
 //   ├─ all listeners start concurrently
 //   ├─ EVERY listener runs to completion (no stop-on-first-error)
 //   ├─ wait for all to finish
@@ -309,7 +315,7 @@ func Page(ctx context.Context, in Incident) error {
     ctx, cancel := context.WithTimeout(ctx, 5*time.Second) // bound the slowest listener
     defer cancel()
 
-    err := alert.EmitAndWaitErr(ctx, in) // 🔜 v1.4 — errors.Join of all failures
+    err := alert.TryEmit(ctx, in) // 🔜 v1.4 — errors.Join of all failures
     if err == nil {
         return nil // every channel delivered
     }
@@ -326,11 +332,12 @@ func Page(ctx context.Context, in Incident) error {
 **Contrast — concurrent but blind:**
 
 ```go
-// ❌ Waits for all three but discards every outcome.
+// ❌ Plain listeners wait for all three but report no outcome.
 alert.AddListener(postSlack)
 alert.AddListener(triggerPagerDuty)
 alert.AddListener(sendEmail)
-alert.EmitAndWait(ctx, incident) // page "sent" even if PagerDuty was down → on-call never woke
+alert.TryEmit(ctx, incident) // page "sent" even if PagerDuty was down → on-call never woke;
+                             //   plain listeners return nothing, so the join is always nil
 ```
 
 The symptom in production: an incident fires, the page is logged as delivered, and yet
@@ -395,7 +402,7 @@ func Write(ctx context.Context, rec Record) error {
     ctx, cancel := context.WithTimeout(ctx, 3*time.Second) // bound the slowest replica
     defer cancel()
 
-    err := replicate.EmitAndWaitErr(ctx, rec) // 🔜 v1.4 — errors.Join of all failures
+    err := replicate.TryEmit(ctx, rec) // 🔜 v1.4 — errors.Join of all failures
     if err == nil {
         return nil // every replica acknowledged
     }
@@ -450,12 +457,13 @@ that missed — never to the ones that already succeeded.
 ## Related Patterns
 
 - **[Transactional Emission](transactional-emission.md)** — the opposite reliability
-  choice: *sequential*, *stop on the first error*. Choose it when steps are ordered and
-  dependent; choose Result Aggregation when they are independent and you want every
-  failure.
+  choice: *sequential* *sync* `TryEmit` that *stops on the first error*. Choose it when
+  steps are ordered and dependent; choose Result Aggregation (async `TryEmit`) when they
+  are independent and you want every failure.
 - **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — the same concurrent
-  wait-for-all timing via `EmitAndWait`, but with *no* error return. Result Aggregation
-  is that pattern made error-aware via `EmitAndWaitErr`.
+  wait-for-all timing via async `TryEmit` with plain listeners, where no error surfaces.
+  Result Aggregation is that timing made error-aware by using error-returning listeners
+  so `TryEmit` returns the joined failures.
 - **[Async Error Routing](async-error-routing.md)** — the choice when you do **not**
   wait: fire-and-forget with `OnError`. Result Aggregation is for when a caller *is*
   waiting and wants a return value.

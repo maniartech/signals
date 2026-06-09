@@ -33,17 +33,15 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	go s.dispatch(ctx, payload, nil)
 }
 
-// TryEmit — same dispatcher, run on the caller's goroutine, then wait for all
-// handlers. Obeys the same concurrency bound.
-func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) {
+// TryEmit — same dispatcher, run concurrently, then wait for all handlers via a
+// WaitGroup and return errors.Join of every handler error. Obeys the same
+// concurrency bound.
+func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 	var wg sync.WaitGroup
 	s.dispatch(ctx, payload, &wg)
 	wg.Wait()
+	return /* errors.Join of collected handler errors */ nil
 }
-
-// TryEmit — like TryEmit, but collects every handler error via
-// errors.Join and returns it.
-func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) error { /* … */ }
 
 func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, wg *sync.WaitGroup) {
 	if ctx != nil && ctx.Err() != nil {
@@ -124,7 +122,7 @@ func recoverToPanicHandler() {
   (cheaply) until a slot frees; nothing is dropped and the caller is never blocked
   (the parking is in the background `go dispatch()` goroutine). Explicit drop/error
   overflow policies may be added later as an opt-in, not in v1.4.
-- **A3. `TryEmit`/`TryEmit` obey the same bound** (they share `dispatch`).
+- **A3. `TryEmit` obeys the same bound** (it shares `dispatch` with `Emit`).
 - **A4. Default is UNBOUNDED** (`New()` ⇒ `slots == nil`). Bounding is an informed
   opt-in via `MaxConcurrent > 0`; `DefaultMaxConcurrent()` (2×NumCPU) is the
   recommended value but is **not** applied automatically.

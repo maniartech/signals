@@ -24,7 +24,7 @@ With a context-free emission, nobody downstream knows:
 ```go
 func handleExport(w http.ResponseWriter, r *http.Request) {
     // ❌ context.Background() severs the listeners from the request's fate.
-    ExportRequested.EmitAndWait(context.Background(), Export{UserID: id})
+    ExportRequested.TryEmit(context.Background(), Export{UserID: id})
     // The user left long ago, but every listener runs to completion anyway:
     // it queries the database, renders megabytes of CSV, and uploads it —
     // all for a response that will never be read.
@@ -47,7 +47,7 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
     ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
     defer cancel()
 
-    if err := ExportRequested.EmitAndWaitErr(ctx, Export{UserID: id}); err != nil {
+    if err := ExportRequested.TryEmit(ctx, Export{UserID: id}); err != nil {
         http.Error(w, "export failed or canceled", http.StatusGatewayTimeout)
         return
     }
@@ -82,8 +82,8 @@ originating request.
   metadata (IDs, deadlines), not for the event payload — that is what the typed
   payload `T` is for. Smuggling domain data through `ctx.Value` is an anti-pattern.
 - **Fire-and-forget where you never observe the outcome** — async `Emit` still honors
-  the canceled-at-emit-time skip, but if you need to *act* on cancellation use a
-  waiting variant (`EmitAndWait`, `TryEmit`).
+  the canceled-at-emit-time skip, but if you need to *act* on cancellation use
+  `TryEmit`.
 
 ## Structure
 
@@ -116,7 +116,7 @@ each listener — and the library owns only the first two.
 | Participant | Responsibility |
 |-------------|----------------|
 | **Context source** | The origin of cancellation/deadline — `r.Context()`, a shutdown context, a `WithTimeout`/`WithCancel` derivation |
-| **Emitter** | Threads `ctx` into `Emit`/`EmitAndWait`/`TryEmit`; never substitutes `context.Background()` to "make the warning go away" |
+| **Emitter** | Threads `ctx` into `Emit`/`TryEmit`; never substitutes `context.Background()` to "make the warning go away" |
 | **Signal** | Skips all listeners if `ctx` is already canceled; for sync emission, checks `ctx` *between* listeners and stops |
 | **Cooperative listener** | Honors the context: passes it to I/O calls and checks `ctx.Err()` inside loops so it can abandon early |
 | **Context value carrier** | Optional: request/trace IDs placed in `ctx` upstream and read by listeners for correlation |
@@ -126,8 +126,8 @@ each listener — and the library owns only the first two.
 1. An upstream boundary (HTTP handler, job runner, shutdown coordinator) obtains or
    derives a context: `ctx := r.Context()`, optionally narrowed with
    `context.WithTimeout` / `context.WithCancel`.
-2. The emitter calls `Signal.Emit(ctx, payload)` (or `EmitAndWait` / `TryEmit`),
-   passing that exact context.
+2. The emitter calls `Signal.Emit(ctx, payload)` (or `TryEmit`), passing that exact
+   context.
 3. **At emit time:** if `ctx.Err() != nil` already, the signal runs **no listener at
    all** — every emit variant honors this short-circuit.
 4. **For sync `Emit` / `TryEmit`:** the signal checks `ctx` **between** listeners. If
@@ -180,8 +180,8 @@ each listener — and the library owns only the first two.
 2. **Know exactly what the library guarantees — and what it doesn't.** Three
    precise rules:
    - **Canceled at emit time ⇒ nothing runs.** If `ctx.Err() != nil` when you call any
-     emit variant (`Emit`, `EmitAndWait`, `TryEmit`), **no listener runs**. A late emit
-     on a dead request is a no-op.
+     emit variant (`Emit`, `TryEmit`), **no listener runs**. A late emit on a dead
+     request is a no-op.
    - **Sync checks *between* listeners.** `SyncSignal.Emit` and `TryEmit` re-check
      `ctx` before each listener in the chain. On cancellation mid-chain, the remaining
      listeners are skipped; `TryEmit` returns `ctx.Err()`. `Emit` (which discards
@@ -212,10 +212,10 @@ each listener — and the library owns only the first two.
    }
    ```
 
-4. **Choose the emit variant for the feedback you need.** Use `TryEmit` (sync) when you
+4. **Choose the emit variant for the feedback you need.** Use sync `TryEmit` when you
    want the chain to stop on cancellation *and* to learn it did via the returned
-   `ctx.Err()`. Use `EmitAndWaitErr` (🔜 v1.4) for concurrent listeners when you need
-   the joined outcome including cancellation. Plain async `Emit` is correct for
+   `ctx.Err()`. Use async `TryEmit` for concurrent listeners when you need the joined
+   outcome (`errors.Join`) including cancellation. Plain async `Emit` is correct for
    loss-tolerant notifications but tells the caller nothing about cancellation.
 
 5. **Set deadlines at the boundary, once.** `context.WithTimeout(r.Context(), budget)`
@@ -327,12 +327,12 @@ func Handler(w http.ResponseWriter, r *http.Request) {
     ctx = context.WithValue(ctx, traceIDKey, r.Header.Get("X-Trace-Id"))
 
     // If the client already left, ctx is canceled and NO listener runs.
-    ExportRequested.EmitAndWait(ctx, Export{ // ✅ concurrent, blocks until all done
+    // Async TryEmit runs the listeners concurrently, waits for all, and joins
+    // any errors (including cancellation) into the returned error.
+    if err := ExportRequested.TryEmit(ctx, Export{ // ✅ concurrent, blocks until all done
         UserID: r.URL.Query().Get("user"),
         Format: "csv",
-    })
-
-    if err := ctx.Err(); err != nil {
+    }); err != nil {
         http.Error(w, "export canceled or timed out", http.StatusGatewayTimeout)
         return
     }
@@ -369,7 +369,7 @@ func recordMetrics(ctx context.Context, e Export) { /* fast, ctx-oblivious is fi
 // ❌ context.Background() cuts the fan-out loose from the request.
 func Handler(w http.ResponseWriter, r *http.Request) {
     // The user can disconnect or the deadline pass; listeners never find out.
-    ExportRequested.EmitAndWait(context.Background(), Export{UserID: id})
+    ExportRequested.TryEmit(context.Background(), Export{UserID: id})
     // Database, render, and upload all run to completion for a discarded response.
 }
 ```
@@ -486,9 +486,9 @@ query or half-built workbook left grinding in the background.
 - **[Synchronous Sequential Dispatch](../dispatch/synchronous-sequential-dispatch.md)**
   — the dispatch mode that gives context its strongest grip: sync `Emit`/`TryEmit`
   check `ctx` *between* listeners and stop a chain mid-flight.
-- **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — pair context with
-  `EmitAndWait`/`EmitAndWaitErr` when you must wait for the bounded fan-out and observe
-  cancellation in the result.
+- **[Await-All Dispatch](../dispatch/await-all-dispatch.md)** — pair context with async
+  `TryEmit` when you must wait for the bounded fan-out and observe cancellation in the
+  result.
 - **[Transactional Emission](../reliability/transactional-emission.md)** — combines
   naturally: a `TryEmit` pipeline that stops both on the first listener *error* and on
   context cancellation, returning whichever happened first.

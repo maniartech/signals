@@ -191,11 +191,27 @@ UserLoggedIn.AddListener(func(ctx context.Context, user User) {
     // Handle event (no error return)
 }, "optional-key")
 
-// Emit (schedules listeners and returns immediately)
+// Add error-returning listeners (errors routed to OnError on the Emit path)
+UserLoggedIn.AddListenerWithErr(func(ctx context.Context, user User) error {
+    return notify(ctx, user)
+}, "optional-key")
+
+// One-shot listeners (consumed on first attempt)
+UserLoggedIn.AddOnce(func(ctx context.Context, user User) { /* ... */ })
+UserLoggedIn.AddOnceWithErr(func(ctx context.Context, user User) error { return nil })
+
+// Emit (schedules listeners and returns immediately; listener errors go to OnError)
 UserLoggedIn.Emit(ctx, user)
 
-// Emit and block until every started listener has returned
-UserLoggedIn.TryEmit(ctx, user)
+// Wait for all listeners and collect their errors (errors.Join)
+if err := UserLoggedIn.TryEmit(ctx, user); err != nil {
+    // one or more listeners failed (or ctx deadline reached)
+}
+
+// Route async listener errors to a sink (additive; multiple sinks allowed)
+UserLoggedIn.OnError(func(ctx context.Context, err error) {
+    log.Printf("listener error: %v", err)
+})
 
 // Remove listener
 UserLoggedIn.RemoveListener("optional-key")
@@ -212,6 +228,11 @@ OrderCreated.AddListenerWithErr(func(ctx context.Context, order Order) error {
     return processPayment(order) // Can return errors
 })
 
+// One-shot error-returning listener (consumed on first attempt)
+OrderCreated.AddOnceWithErr(func(ctx context.Context, order Order) error {
+    return auditOnce(order)
+})
+
 // Error-safe emit with context cancellation
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
@@ -220,6 +241,12 @@ if err := OrderCreated.TryEmit(ctx, order); err != nil {
     // Handle error or timeout
     // Subsequent listeners won't execute if error occurs
 }
+
+// Best-effort Emit: runs all listeners; listener errors are routed to OnError
+OrderCreated.OnError(func(ctx context.Context, err error) {
+    log.Printf("listener error: %v", err)
+})
+OrderCreated.Emit(ctx, order)
 ```
 
 ### **Advanced Patterns**
@@ -249,12 +276,19 @@ go func() {
 in its own goroutine and returns immediately. In earlier releases, `Emit`
 waited for all listeners to finish.
 
-- If you relied on the old blocking behavior, switch to `TryEmit`.
+- If you relied on the old blocking "wait for all listeners" behavior, call
+  `TryEmit`. If you don't care about listener errors, simply ignore its return
+  value: `_ = sig.TryEmit(ctx, payload)`.
 - If the supplied context is already canceled, `Emit`/`TryEmit` skip all listeners.
 - Panics in async listeners are recovered and reported via `signals.SetPanicHandler`
   (default: logged with the standard library `log` package).
-- `SyncSignal.Emit` now also invokes error-returning listeners, discarding their
-  errors; use `TryEmit` when errors must stop emission.
+- `SyncSignal.Emit` now also invokes error-returning listeners best-effort; their
+  errors are routed to any sinks registered via `OnError` rather than discarded.
+  Use `TryEmit` when an error must stop emission and be returned to the caller.
+- `OnError(func(ctx, err error))` is available on both `SyncSignal` and
+  `AsyncSignal` (and on the `Signal[T]` interface). It receives error-returning
+  listeners' errors on the `Emit` path; on the `TryEmit` path those errors are
+  returned to the caller instead.
 
 ## Documentation
 
