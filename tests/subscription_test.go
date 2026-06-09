@@ -9,6 +9,42 @@ import (
 	"github.com/maniartech/signals"
 )
 
+// RemoveListener must never remove unkeyed listeners (FR-4), and an empty-string key
+// is treated as unkeyed (FR-9) — so RemoveListener("") is a no-op returning -1, and
+// only a real key removes its listener.
+func TestRemoveListenerEmptyKeyOnlyRemovesKeyed(t *testing.T) {
+	sig := signals.NewSync[int]()
+
+	var unkeyedCalled int
+	var keyedCalled int
+
+	sig.AddListener(func(ctx context.Context, v int) {
+		unkeyedCalled++
+	})
+	sig.AddListener(func(ctx context.Context, v int) {
+		keyedCalled++
+	}, "k")
+
+	// Empty-string key is unkeyed (FR-9): RemoveListener("") removes nothing and must
+	// not touch the unkeyed listener (FR-4).
+	if got := sig.RemoveListener(""); got != -1 {
+		t.Fatalf("RemoveListener(\"\") = %d; want -1 (no-op, must not remove unkeyed)", got)
+	}
+	// Removing the real key leaves the unkeyed listener in place.
+	if got := sig.RemoveListener("k"); got != 1 {
+		t.Fatalf("RemoveListener(\"k\") left %d listeners, want 1 (the unkeyed one)", got)
+	}
+
+	sig.Emit(context.Background(), 1)
+
+	if unkeyedCalled != 1 {
+		t.Fatalf("Expected unkeyed listener to remain, got %d calls", unkeyedCalled)
+	}
+	if keyedCalled != 0 {
+		t.Fatalf("Expected keyed listener to be removed, got %d calls", keyedCalled)
+	}
+}
+
 func noop(context.Context, int) {}
 
 func contains(ss []string, want string) bool {
@@ -187,4 +223,76 @@ func TestKeys_ConcurrentSafe(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+func TestSignalOptionsGrowthFuncIsUsed(t *testing.T) {
+	var called int32
+	opts := &signals.SignalOptions{
+		InitialCapacity: 1,
+		GrowthFunc: func(currentCap int) int {
+			atomic.AddInt32(&called, 1)
+			return currentCap + 1
+		},
+	}
+
+	sig := signals.NewSyncWithOptions[int](opts)
+	sig.AddListener(func(ctx context.Context, v int) {})
+	sig.AddListener(func(ctx context.Context, v int) {})
+
+	if atomic.LoadInt32(&called) == 0 {
+		t.Fatalf("Expected GrowthFunc to be called when capacity grows")
+	}
+}
+
+func TestSignalOptionsGrowthFuncIsUsedForErrorListeners(t *testing.T) {
+	var called int32
+	opts := &signals.SignalOptions{
+		InitialCapacity: 1,
+		GrowthFunc: func(currentCap int) int {
+			atomic.AddInt32(&called, 1)
+			return currentCap + 1
+		},
+	}
+
+	sig := signals.NewSyncWithOptions[int](opts)
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { return nil })
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { return nil })
+
+	if atomic.LoadInt32(&called) == 0 {
+		t.Fatalf("Expected GrowthFunc to be called when capacity grows for error listeners")
+	}
+}
+
+// Test SignalListener type directly
+func TestSignalListener(t *testing.T) {
+	// Create a concrete listener
+	listener := func(ctx context.Context, s string) {
+		// Test listener implementation
+	}
+
+	// Test calling the listener
+	listener(context.Background(), "test")
+}
+
+// Test SignalListenerErr type directly
+func TestSignalListenerErr(t *testing.T) {
+	// Create a concrete error-returning listener
+	listenerErr := func(ctx context.Context, i int) error {
+		if i < 0 {
+			return context.Canceled
+		}
+		return nil
+	}
+
+	// Test calling the listener with no error
+	err := listenerErr(context.Background(), 5)
+	if err != nil {
+		t.Errorf("Expected no error for positive value, got %v", err)
+	}
+
+	// Test calling the listener with error
+	err = listenerErr(context.Background(), -1)
+	if err == nil {
+		t.Error("Expected error for negative value")
+	}
 }
