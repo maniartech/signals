@@ -293,16 +293,64 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 // (On async signals the panic is recovered and routed to SetPanicHandler; on sync
 // signals it propagates to the Emit caller, as with any sync listener.)
 //
+// An optional key makes the one-shot addressable (for early removal before it
+// fires) and subject to duplicate detection: passing a key that already exists
+// returns -1 and adds nothing. An absent or empty key is treated as unkeyed
+// (FR-9 key contract).
+//
 // Returns the number of subscribers after adding the listener.
-func (s *BaseSignal[T]) AddOnce(handler SignalListener[T]) int {
-	return s.addOnce(handler, "", false)
+func (s *BaseSignal[T]) AddOnce(handler SignalListener[T], key ...string) int {
+	k, userKeyed := oneShotUserKey(key)
+	return s.addOnce(handler, k, userKeyed)
 }
 
-// AddOnceWithKey registers a keyed one-time listener. It behaves like AddOnce but
-// the listener is addressable by key (e.g. for early removal before it fires) and
-// participates in duplicate detection: it returns -1 if the key already exists.
-func (s *BaseSignal[T]) AddOnceWithKey(handler SignalListener[T], key string) int {
-	return s.addOnce(handler, key, true)
+// AddOnceWithErr is the error-returning counterpart of AddOnce: the listener
+// fires exactly once, removes itself, and reports failure via an error. It is to
+// AddOnce what AddListenerWithErr is to AddListener, and accepts the same optional
+// key. The returned error is routed the usual way — to OnError sinks on the Emit
+// (best-effort) path, and collected into the joined result on TryEmit.
+//
+// The one-shot is "consumed on attempt" (see AddOnce): it fires and self-removes
+// on its single invocation even if the handler returns a non-nil error; the error
+// is reported but the listener is not retried on a later emission.
+//
+// Returns the number of subscribers after adding the listener.
+func (s *BaseSignal[T]) AddOnceWithErr(handler SignalListenerErr[T], key ...string) int {
+	if handler == nil {
+		panic("listener cannot be nil")
+	}
+	k, auto := oneShotKey(oneShotUserKey(key))
+
+	var fired atomic.Bool
+	wrapper := func(ctx context.Context, payload T) error {
+		if !fired.CompareAndSwap(false, true) {
+			return nil // already fired by a concurrent emission
+		}
+		s.RemoveListener(k) // remove self first (see addOnce for the rationale)
+		return handler(ctx, payload)
+	}
+
+	return s.add(keyedListener[T]{key: k, keyed: true, auto: auto, listenerErr: wrapper})
+}
+
+// oneShotUserKey normalizes the variadic key argument shared by AddOnce and
+// AddOnceWithErr into (key, userKeyed). An absent or empty-string key is unkeyed.
+func oneShotUserKey(key []string) (string, bool) {
+	if len(key) > 0 && key[0] != "" {
+		return key[0], true
+	}
+	return "", false
+}
+
+// oneShotKey resolves the actual listener key for a one-shot. A caller key is used
+// as-is; otherwise (unkeyed, or empty per FR-9) an internal key is synthesized so
+// the one-shot can self-remove — that key is hidden from Keys() and cannot collide
+// with a caller key.
+func oneShotKey(key string, userKeyed bool) (string, bool) {
+	if userKeyed && key != "" {
+		return key, false
+	}
+	return onceKeyPrefix + strconv.FormatUint(onceCounter.Add(1), 10), true
 }
 
 // addOnce wraps handler in a one-shot guard that runs it at most once (via an
@@ -314,17 +362,9 @@ func (s *BaseSignal[T]) addOnce(handler SignalListener[T], key string, userKeyed
 		panic("listener cannot be nil")
 	}
 
-	var fired atomic.Bool
-	k := key
-	auto := false
-	// No caller key (or an empty-string key, which is unkeyed per the FR-9 contract):
-	// synthesize an internal key so the one-shot can self-remove. The internal key is
-	// hidden from Keys() and cannot collide with a caller key.
-	if !userKeyed || key == "" {
-		k = onceKeyPrefix + strconv.FormatUint(onceCounter.Add(1), 10)
-		auto = true
-	}
+	k, auto := oneShotKey(key, userKeyed)
 
+	var fired atomic.Bool
 	wrapper := func(ctx context.Context, payload T) {
 		if !fired.CompareAndSwap(false, true) {
 			return // already fired by a concurrent emission

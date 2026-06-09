@@ -10,7 +10,7 @@ simple APIs, context propagation, and predictable concurrency behavior.
 > fire-and-forget — it schedules listeners and **returns immediately** instead
 > of waiting for them. This is a *silent runtime* change (your code still
 > compiles). **If you relied on the old blocking behavior, switch
-> `Emit` → `EmitAndWait`.** See [Migration Note](#-migration-note-async-emit-semantics).
+> `Emit` → `TryEmit`.** See [Migration Note](#-migration-note-async-emit-semantics).
 
 ## Key Features
 
@@ -195,7 +195,7 @@ UserLoggedIn.AddListener(func(ctx context.Context, user User) {
 UserLoggedIn.Emit(ctx, user)
 
 // Emit and block until every started listener has returned
-UserLoggedIn.EmitAndWait(ctx, user)
+UserLoggedIn.TryEmit(ctx, user)
 
 // Remove listener
 UserLoggedIn.RemoveListener("optional-key")
@@ -249,8 +249,8 @@ go func() {
 in its own goroutine and returns immediately. In earlier releases, `Emit`
 waited for all listeners to finish.
 
-- If you relied on the old blocking behavior, switch to `EmitAndWait`.
-- If the supplied context is already canceled, `Emit`/`EmitAndWait` skip all listeners.
+- If you relied on the old blocking behavior, switch to `TryEmit`.
+- If the supplied context is already canceled, `Emit`/`TryEmit` skip all listeners.
 - Panics in async listeners are recovered and reported via `signals.SetPanicHandler`
   (default: logged with the standard library `log` package).
 - `SyncSignal.Emit` now also invokes error-returning listeners, discarding their

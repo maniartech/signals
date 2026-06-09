@@ -27,7 +27,7 @@ func TestEdge_NilListenerPanicsAtCallSite(t *testing.T) {
 		{"sync.AddListener(nil)", func() { s.AddListener(nil) }},
 		{"sync.AddListenerWithErr(nil)", func() { s.AddListenerWithErr(nil) }},
 		{"sync.AddOnce(nil)", func() { s.AddOnce(nil) }},
-		{"sync.AddOnceWithKey(nil)", func() { s.AddOnceWithKey(nil, "k") }},
+		{"sync.AddOnce(nil)", func() { s.AddOnce(nil, "k") }},
 		{"async.AddListener(nil)", func() { a.AddListener(nil) }},
 		{"async.AddOnce(nil)", func() { a.AddOnce(nil) }},
 	}
@@ -92,8 +92,8 @@ func TestEdge_DuplicateKeyReturnsMinusOne(t *testing.T) {
 	if got := s.AddListenerWithErr(func(context.Context, int) error { return nil }, "k"); got != -1 {
 		t.Fatalf("dup AddListenerWithErr = %d, want -1", got)
 	}
-	if got := s.AddOnceWithKey(func(context.Context, int) {}, "k"); got != -1 {
-		t.Fatalf("dup AddOnceWithKey = %d, want -1", got)
+	if got := s.AddOnce(func(context.Context, int) {}, "k"); got != -1 {
+		t.Fatalf("dup AddOnce = %d, want -1", got)
 	}
 	if s.Len() != 1 {
 		t.Fatalf("Len = %d after duplicate adds; want 1", s.Len())
@@ -135,12 +135,12 @@ func TestEdge_EmptyStringKeyIsUnkeyed(t *testing.T) {
 	if got := s.AddListener(func(context.Context, int) {}, ""); got != 2 {
 		t.Fatalf("second empty-key add = %d; want 2 (not deduped)", got)
 	}
-	// AddOnceWithKey("") behaves as an unkeyed one-shot (auto-removing, hidden key).
+	// AddOnce("") behaves as an unkeyed one-shot (auto-removing, hidden key).
 	a := signals.New[int]()
 	var once int32
-	a.AddOnceWithKey(func(context.Context, int) { atomic.AddInt32(&once, 1) }, "")
+	a.AddOnce(func(context.Context, int) { atomic.AddInt32(&once, 1) }, "")
 	if a.HasKey("") {
-		t.Fatal(`AddOnceWithKey("") must not register key ""`)
+		t.Fatal(`AddOnce("") must not register key ""`)
 	}
 	a.TryEmit(context.Background(), 1)
 	a.TryEmit(context.Background(), 1)
@@ -224,18 +224,18 @@ func TestRetro_ZeroValueBaseSignal_IsEmpty(t *testing.T) {
 func TestRetro_AddOnce_NilHandlerPanics(t *testing.T) {
 	sig := signals.NewSync[int]()
 	retroMustPanic(t, "AddOnce(nil)", func() { sig.AddOnce(nil) })
-	retroMustPanic(t, "AddOnceWithKey(nil)", func() { sig.AddOnceWithKey(nil, "k") })
+	retroMustPanic(t, "AddOnce(nil)", func() { sig.AddOnce(nil, "k") })
 }
 
-// Covers AsyncSignal.AddOnceWithKey (previously 0% — never exercised on async).
-func TestRetro_Async_AddOnceWithKey(t *testing.T) {
+// Covers AsyncSignal.AddOnce (previously 0% — never exercised on async).
+func TestRetro_Async_AddOnceKeyed(t *testing.T) {
 	sig := signals.New[int]()
 	var n int32
-	sig.AddOnceWithKey(func(context.Context, int) { atomic.AddInt32(&n, 1) }, "once")
+	sig.AddOnce(func(context.Context, int) { atomic.AddInt32(&n, 1) }, "once")
 	sig.TryEmit(context.Background(), 1)
 	sig.TryEmit(context.Background(), 2)
 	if got := atomic.LoadInt32(&n); got != 1 {
-		t.Fatalf("async AddOnceWithKey fired %d times, want 1", got)
+		t.Fatalf("async AddOnce fired %d times, want 1", got)
 	}
 	if sig.HasKey("once") {
 		t.Fatal("async one-shot listener should auto-remove after firing")

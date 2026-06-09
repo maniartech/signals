@@ -5,16 +5,16 @@
 ### ⚠️ Breaking Changes
 
 > **Migration in one line:** if you relied on `AsyncSignal.Emit` blocking until
-> listeners finished, change `Emit` → `EmitAndWait`. Your code still compiles;
+> listeners finished, change `Emit` → `TryEmit`. Your code still compiles;
 > the behavior changes silently at runtime, so update before upgrading.
 
-- `AsyncSignal.Emit` is now fire-and-forget: it returns immediately without waiting for listeners. Use the new `EmitAndWait` for the previous blocking behavior.
+- `AsyncSignal.Emit` is now fire-and-forget: it returns immediately without waiting for listeners. Use the new `TryEmit` for the previous blocking behavior.
 - `SyncSignal.Emit` now invokes error-returning listeners (their errors are discarded). `TryEmit` behavior is unchanged.
 - `Emit` (sync and async) skips all listeners when the provided context is already canceled.
 
 ### Added
 
-- `AsyncSignal.EmitAndWait` — schedules listeners concurrently and waits for completion.
+- `AsyncSignal.TryEmit` — schedules listeners concurrently and waits for completion.
 - `signals.SetPanicHandler` — configures how recovered async-listener panics are reported (default: standard library `log`).
 - Zero-value `SyncSignal` / `AsyncSignal` are now safe to use without constructors.
 - `SignalOptions.GrowthFunc` is now honored when the subscriber list grows.

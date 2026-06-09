@@ -2,6 +2,7 @@ package signals_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -132,13 +133,13 @@ func TestAddOnce_UnkeyedHiddenFromKeys(t *testing.T) {
 	}
 }
 
-func TestAddOnceWithKey_DedupAndRemoveOnFire(t *testing.T) {
+func TestAddOnce_KeyedDedupAndRemoveOnFire(t *testing.T) {
 	sig := signals.NewSync[int]()
 
-	if got := sig.AddOnceWithKey(noop, "once"); got != 1 {
+	if got := sig.AddOnce(noop, "once"); got != 1 {
 		t.Fatalf("expected count 1, got %d", got)
 	}
-	if got := sig.AddOnceWithKey(noop, "once"); got != -1 {
+	if got := sig.AddOnce(noop, "once"); got != -1 {
 		t.Fatalf("expected -1 for duplicate key, got %d", got)
 	}
 	if !sig.HasKey("once") {
@@ -152,6 +153,106 @@ func TestAddOnceWithKey_DedupAndRemoveOnFire(t *testing.T) {
 
 	if sig.HasKey("once") {
 		t.Fatal("expected keyed once listener removed after firing")
+	}
+}
+
+// --- AddOnceWithErr (error-returning one-shot; completes the 2x2 registration matrix) ---
+
+// On the sync Emit (best-effort) path, a one-shot error listener fires once,
+// self-removes, and its error is routed to OnError.
+func TestAddOnceWithErr_SyncRoutesToOnErrorAndFiresOnce(t *testing.T) {
+	sig := signals.NewSync[int]()
+	boom := errors.New("boom")
+	var calls, routed int32
+	sig.OnError(func(_ context.Context, err error) {
+		if errors.Is(err, boom) {
+			atomic.AddInt32(&routed, 1)
+		}
+	})
+	sig.AddOnceWithErr(func(context.Context, int) error {
+		atomic.AddInt32(&calls, 1)
+		return boom
+	})
+
+	sig.Emit(context.Background(), 1)
+	sig.Emit(context.Background(), 2) // listener already consumed — must not run again
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("one-shot error listener fired %d times, want 1", got)
+	}
+	if got := atomic.LoadInt32(&routed); got != 1 {
+		t.Fatalf("OnError received the error %d times, want 1", got)
+	}
+	if got := sig.Len(); got != 0 {
+		t.Fatalf("expected auto-remove after firing, Len=%d", got)
+	}
+}
+
+// On TryEmit the one-shot error is collected into the returned (joined) error.
+func TestAddOnceWithErr_TryEmitReturnsError(t *testing.T) {
+	sig := signals.New[int]()
+	boom := errors.New("boom")
+	sig.AddOnceWithErr(func(context.Context, int) error { return boom })
+
+	if err := sig.TryEmit(context.Background(), 1); !errors.Is(err, boom) {
+		t.Fatalf("TryEmit error = %v, want boom", err)
+	}
+	if err := sig.TryEmit(context.Background(), 2); err != nil {
+		t.Fatalf("second TryEmit error = %v, want nil (one-shot consumed)", err)
+	}
+}
+
+// A keyed one-shot error listener participates in dedup (returns -1) and is
+// addressable/removable before it fires.
+func TestAddOnceWithErr_KeyedDedup(t *testing.T) {
+	sig := signals.NewSync[int]()
+	h := func(context.Context, int) error { return nil }
+
+	if got := sig.AddOnceWithErr(h, "once"); got != 1 {
+		t.Fatalf("expected count 1, got %d", got)
+	}
+	if got := sig.AddOnceWithErr(h, "once"); got != -1 {
+		t.Fatalf("expected -1 for duplicate key, got %d", got)
+	}
+	if !sig.HasKey("once") {
+		t.Fatal("expected HasKey(once) true")
+	}
+}
+
+// A nil handler panics, like every other registration method.
+func TestAddOnceWithErr_NilPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic on nil handler")
+		}
+	}()
+	signals.NewSync[int]().AddOnceWithErr(nil)
+}
+
+// Many simultaneous async emissions must invoke a one-shot error listener exactly
+// once (covers the already-fired CAS branch of the error wrapper).
+func TestAddOnceWithErr_ConcurrentExactlyOnce(t *testing.T) {
+	for trial := 0; trial < 50; trial++ {
+		sig := signals.New[int]()
+		var count int32
+		sig.AddOnceWithErr(func(context.Context, int) error {
+			atomic.AddInt32(&count, 1)
+			return nil
+		})
+
+		var wg sync.WaitGroup
+		for i := 0; i < 32; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = sig.TryEmit(context.Background(), 1)
+			}()
+		}
+		wg.Wait()
+
+		if got := atomic.LoadInt32(&count); got != 1 {
+			t.Fatalf("trial %d: expected exactly one invocation, got %d", trial, got)
+		}
 	}
 }
 

@@ -79,12 +79,12 @@ The levers v1.4 actually ships:
   run concurrently. A `MaxConcurrent` bound caps *concurrent* handlers; excess **parks**
   (no drop, no caller-block). Unbounded by default (a bound can starve long-running
   listeners — see [Bounded Concurrency](flow-control/bounded-concurrency.md)).
-- **`EmitAndWait` / `EmitAndWaitErr`** — allowed to make the caller wait ⇒ the natural
+- **`TryEmit` / `TryEmit`** — allowed to make the caller wait ⇒ the natural
   **backpressure** path: the producer's own loop self-throttles to the rate handlers
   complete, and no event is lost. This is the path for loss-intolerant work.
 
 The rule of thumb: **loss-intolerant data (trades, orders, audit entries) belongs on
-`EmitAndWait`** — the path that lets the producer slow down. See
+`TryEmit`** — the path that lets the producer slow down. See
 [Backpressure](flow-control/backpressure.md).
 
 > **Deferred (🔭 post-v1.4):** explicit **drop / block / error overflow policies** and a
@@ -161,8 +161,8 @@ TryEmit(ctx context.Context, payload T) error   // ✅ sequential, stops on firs
 ### Emission — AsyncSignal
 ```go
 Emit(ctx context.Context, payload T)                  // ✅ fire-and-forget; one dispatcher goroutine, returns immediately
-EmitAndWait(ctx context.Context, payload T)           // ✅ concurrent handlers, blocks until all done
-EmitAndWaitErr(ctx context.Context, payload T) error  // 🔜 v1.4 — concurrent, waits, errors.Join'd
+TryEmit(ctx context.Context, payload T)           // ✅ concurrent handlers, blocks until all done
+TryEmit(ctx context.Context, payload T) error  // 🔜 v1.4 — concurrent, waits, errors.Join'd
 ```
 
 ### Failure hooks

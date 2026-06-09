@@ -63,7 +63,7 @@ type Signal[T any] interface {
 	//   - SyncSignal: the error propagates through TryEmit (which stops on the first
 	//     error); plain Emit discards it.
 	//   - AsyncSignal: on the fire-and-forget Emit path the error is routed to the
-	//     sinks registered via OnError; on EmitAndWaitErr it is collected and returned.
+	//     sinks registered via OnError; on TryEmit it is collected and returned.
 	AddListenerWithErr(handler SignalListenerErr[T], key ...string) int
 
 	// RemoveListener removes a listener from the signal.
@@ -128,14 +128,18 @@ type Signal[T any] interface {
 
 	// AddOnce adds a listener that fires exactly once and then removes itself.
 	// The one-shot guarantee is concurrency-safe: even under simultaneous
-	// emissions the handler is invoked at most once. It returns the number of
-	// subscribers after adding the listener.
-	AddOnce(handler SignalListener[T]) int
+	// emissions the handler is invoked at most once. An optional key makes the
+	// one-shot addressable (to remove it before it fires) and subject to duplicate
+	// detection (returns -1 if the key already exists); absent/empty key = unkeyed.
+	// It returns the number of subscribers after adding the listener.
+	AddOnce(handler SignalListener[T], key ...string) int
 
-	// AddOnceWithKey adds a keyed one-time listener. It behaves like AddOnce but
-	// is addressable by key (e.g. to remove it before it fires) and returns -1 if
-	// a listener with the same key already exists.
-	AddOnceWithKey(handler SignalListener[T], key string) int
+	// AddOnceWithErr is the error-returning counterpart of AddOnce, accepting the
+	// same optional key — it is to AddOnce what AddListenerWithErr is to AddListener.
+	// The listener fires once, removes itself, and reports failure via an error that
+	// is routed like any other listener error (OnError on Emit, joined on TryEmit).
+	// It is "consumed on attempt": it fires and self-removes even if it errors.
+	AddOnceWithErr(handler SignalListenerErr[T], key ...string) int
 
 	// Keys returns a snapshot of all caller-supplied listener keys, safe to read
 	// while other goroutines mutate the listener set. Empty-string keys are omitted.

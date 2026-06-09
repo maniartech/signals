@@ -33,17 +33,17 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	go s.dispatch(ctx, payload, nil)
 }
 
-// EmitAndWait — same dispatcher, run on the caller's goroutine, then wait for all
+// TryEmit — same dispatcher, run on the caller's goroutine, then wait for all
 // handlers. Obeys the same concurrency bound.
-func (s *AsyncSignal[T]) EmitAndWait(ctx context.Context, payload T) {
+func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) {
 	var wg sync.WaitGroup
 	s.dispatch(ctx, payload, &wg)
 	wg.Wait()
 }
 
-// EmitAndWaitErr — like EmitAndWait, but collects every handler error via
+// TryEmit — like TryEmit, but collects every handler error via
 // errors.Join and returns it.
-func (s *AsyncSignal[T]) EmitAndWaitErr(ctx context.Context, payload T) error { /* … */ }
+func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) error { /* … */ }
 
 func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, wg *sync.WaitGroup) {
 	if ctx != nil && ctx.Err() != nil {
@@ -124,7 +124,7 @@ func recoverToPanicHandler() {
   (cheaply) until a slot frees; nothing is dropped and the caller is never blocked
   (the parking is in the background `go dispatch()` goroutine). Explicit drop/error
   overflow policies may be added later as an opt-in, not in v1.4.
-- **A3. `EmitAndWait`/`EmitAndWaitErr` obey the same bound** (they share `dispatch`).
+- **A3. `TryEmit`/`TryEmit` obey the same bound** (they share `dispatch`).
 - **A4. Default is UNBOUNDED** (`New()` ⇒ `slots == nil`). Bounding is an informed
   opt-in via `MaxConcurrent > 0`; `DefaultMaxConcurrent()` (2×NumCPU) is the
   recommended value but is **not** applied automatically.
@@ -132,7 +132,7 @@ func recoverToPanicHandler() {
   `MaxConcurrent` rather than defaulted away:
   1. **Starvation:** a bound can starve *long-running* listeners — only N run, the
      rest never start. (This is the decisive reason the default is unbounded.)
-  2. **Reentrancy/self-deadlock:** a handler that `EmitAndWait`s on its *own*
+  2. **Reentrancy/self-deadlock:** a handler that `TryEmit`s on its *own*
      bounded signal can deadlock by holding a slot while waiting for one.
 
 ### B — Async error model
@@ -140,13 +140,13 @@ func recoverToPanicHandler() {
 - **B1. `OnError(func(ctx, error))` per signal, multiple allowed** (additive sinks).
   Errors returned by async listeners on the fire-and-forget `Emit` path are routed
   to every registered `OnError` callback — the way panics route to `SetPanicHandler`.
-- **B2. `EmitAndWaitErr(ctx, payload) error`** — concurrent handlers, waits, returns
+- **B2. `TryEmit(ctx, payload) error`** — concurrent handlers, waits, returns
   all failures combined via `errors.Join`.
 - **B3. Fix the silent gap + promote `AddListenerWithErr`.** Async `dispatch`
   currently ignores error-returning listeners entirely. v1.4 wires them in (routed
   per B1/B2) and promotes `AddListenerWithErr` to the `Signal` interface, implemented
   on async. The error-returning listener is *how a handler reports failure*; without
-  it `OnError`/`EmitAndWaitErr` would have no input.
+  it `OnError`/`TryEmit` would have no input.
 - **B4. Panics stay global** (`SetPanicHandler`), **errors are per-signal**
   (`OnError`). Expected failures → return an `error`; unexpected bugs → `panic`.
 
@@ -181,8 +181,8 @@ The pattern catalog (`docs/patterns/`) currently assumes **drop-and-count** as t
 - `flow-control/load-shedding.md` — reframe to an **opt-in** policy (not the default).
 - `flow-control/bounded-concurrency.md` — semaphore design, unbounded default, the
   starvation caveat, pool-size ≠ subscriber-count reasoning with examples.
-- `flow-control/backpressure.md` — `EmitAndWait` as the lossless path.
+- `flow-control/backpressure.md` — `TryEmit` as the lossless path.
 - `reliability/async-error-routing.md`, `result-aggregation.md` — `OnError` (multiple),
-  `EmitAndWaitErr`, `AddListenerWithErr` on async.
+  `TryEmit`, `AddListenerWithErr` on async.
 - `dispatch/fire-and-forget-dispatch.md` — one-dispatcher-goroutine model, parks
   (does not drop) under a bound by default.

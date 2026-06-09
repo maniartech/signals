@@ -141,16 +141,17 @@ func (s *AsyncSignal[T]) OnError(sink func(ctx context.Context, err error)) {
 	s.baseSignal.OnError(sink)
 }
 
-// AddOnce registers a one-time listener. See BaseSignal.AddOnce for details.
-func (s *AsyncSignal[T]) AddOnce(handler SignalListener[T]) int {
+// AddOnce registers a one-time listener with an optional key. See BaseSignal.AddOnce.
+func (s *AsyncSignal[T]) AddOnce(handler SignalListener[T], key ...string) int {
 	s.ensureBase()
-	return s.baseSignal.AddOnce(handler)
+	return s.baseSignal.AddOnce(handler, key...)
 }
 
-// AddOnceWithKey registers a keyed one-time listener. See BaseSignal.AddOnceWithKey.
-func (s *AsyncSignal[T]) AddOnceWithKey(handler SignalListener[T], key string) int {
+// AddOnceWithErr registers an error-returning one-time listener with an optional
+// key. See BaseSignal.AddOnceWithErr.
+func (s *AsyncSignal[T]) AddOnceWithErr(handler SignalListenerErr[T], key ...string) int {
 	s.ensureBase()
-	return s.baseSignal.AddOnceWithKey(handler, key)
+	return s.baseSignal.AddOnceWithErr(handler, key...)
 }
 
 // Keys returns a snapshot of all listener keys. See BaseSignal.Keys for details.
