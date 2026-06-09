@@ -47,6 +47,12 @@ type Signal[T any] interface {
 	// was already added. It returns -1 if the listener with the same key
 	// was already added to the signal.
 	//
+	// The returned int is a COUNT, not a positional handle: it is not an index and
+	// must not be passed to any remove operation. Removal is by key only (there is no
+	// remove-by-position) — listener positions are not stable (RemoveListener uses
+	// swap-remove). To remove a specific listener later, register it with a key and
+	// call RemoveListener(key); unkeyed listeners can only be cleared via Reset.
+	//
 	// Example:
 	//	signal := signals.NewSync[int]()
 	//	count := signal.AddListener(func(ctx context.Context, payload int) {
