@@ -162,21 +162,62 @@ if err := SystemAlert.TryEmit(ctx, criticalAlert); err != nil {
 
 ## Performance & Benchmarks
 
-Benchmarks are included in the repo so you can measure on your own
-hardware and Go version:
+Every number below comes from a committed benchmark (`tests/bench_test.go`) and is
+reproducible on your own hardware and Go version:
 
 ```bash
-go test -bench . -benchmem
+go test -run '^$' -bench=. -benchmem -count=6 ./tests/
 ```
 
-Notes:
+**Measured on:** `goos: windows · goarch: amd64 · AMD Ryzen 7 5700G (16 threads) · go test -count=6`.
+Numbers are machine-specific — **reproduce locally; treat these as guidance, not guarantees.**
 
-- **AsyncSignal** spawns a goroutine per listener; expect allocations
-  and scheduling overhead per emit.
-- **SyncSignal** is designed to be low-allocation in steady state after
-  listeners are registered.
-- Results will vary by CPU, Go version, and runtime settings; treat
-  numbers as guidance, not guarantees.
+### Sync emission — lock-free copy-on-write read path (0 allocations)
+
+| Benchmark | Time | Allocs |
+|---|---|---|
+| `SyncEmit` · 1 listener | ~9 ns | 0 B · 0 allocs |
+| `SyncEmit` · 10 listeners | ~39 ns | 0 B · 0 allocs |
+| `SyncEmit` · concurrent (16 threads) | ~1.3 ns | 0 B · 0 allocs |
+| `SyncTryEmit` · 1 listener | ~11 ns | 0 B · 0 allocs |
+| `SyncEmit` · error routed to `OnError` | ~20 ns | 0 B · 0 allocs |
+
+The sync read path is a single atomic load of an immutable slice — no lock, no per-emit
+snapshot copy, no allocation. Concurrent sync emission scales near-linearly (the ~1.3 ns is
+aggregate across 16 threads).
+
+### Async emission — `Emit` is **dispatch rate**, not listener completion
+
+`AsyncSignal.Emit` is fire-and-forget: it spawns a dispatcher and returns. These numbers
+measure how fast it *schedules* listeners (a goroutine per listener), **not** how long
+listeners take to run.
+
+| Benchmark | Time | Allocs |
+|---|---|---|
+| `Emit` (dispatch) · 1 listener | ~260 ns | 208 B · 2 allocs |
+| `Emit` (dispatch) · 100 listeners | ~28 µs | ~11 KB · ~85 allocs |
+| `TryEmit` (waits for all) · 10 listeners | ~6.5 µs | 1.5 KB · 12 allocs |
+| `TryEmit` **bounded** (`MaxConcurrent=4`) · 10 listeners | ~9.2 µs | 1.5 KB · 12 allocs |
+
+`TryEmit` waits for every listener (goroutine spawn + `WaitGroup` synchronization), so it is
+necessarily slower than fire-and-forget `Emit`. **Bounding is a safety valve, not a speed
+win** — the bounded variant is *slower* than unbounded here by design: it caps how many
+handlers run at once to protect a slow downstream dependency, trading throughput for control.
+
+### Write path — O(n) by design
+
+| Benchmark | Time | Allocs |
+|---|---|---|
+| `AddListener`/`RemoveListener` churn (~1000 listeners, concurrent) | ~30 µs | ~82 KB · 5 allocs |
+
+Copy-on-write rebuilds the whole subscriber slice on every mutation, so writes are O(n).
+This is the deliberate trade behind lock-free, allocation-free reads: a signal emits far
+more often than it changes its listener set. Workloads that churn listeners as hot as they
+emit are not a good fit for this design.
+
+> Earlier docs quoted "sub-10 ns / zero-allocation" as a blanket headline and attributed
+> ~11 ns to async emission. Those claims are retired: ~9 ns / 0-alloc is the **sync** read
+> path specifically; async `Emit` is a few hundred nanoseconds of *dispatch* and allocates.
 
 ## API Reference
 
