@@ -356,7 +356,7 @@ func TestAsyncSignal_ListenerPanicDoesNotCrashSmallPath(t *testing.T) {
 	sig.Emit(context.Background(), 1)
 }
 
-func TestAsyncSignal_EmitAndWaitWaitsForAllListeners(t *testing.T) {
+func TestAsyncSignal_TryEmitWaitsForAllListeners(t *testing.T) {
 	sig := signals.New[int]()
 
 	var finished int32
@@ -368,14 +368,14 @@ func TestAsyncSignal_EmitAndWaitWaitsForAllListeners(t *testing.T) {
 		})
 	}
 
-	sig.EmitAndWait(context.Background(), 1)
+	sig.TryEmit(context.Background(), 1)
 
 	if got := atomic.LoadInt32(&finished); got != n {
-		t.Fatalf("Expected all %d listeners to finish before EmitAndWait returns, got %d", n, got)
+		t.Fatalf("Expected all %d listeners to finish before TryEmit returns, got %d", n, got)
 	}
 }
 
-func TestAsyncSignal_EmitAndWaitRunsListenersConcurrently(t *testing.T) {
+func TestAsyncSignal_TryEmitRunsListenersConcurrently(t *testing.T) {
 	sig := signals.New[int]()
 
 	var inFlight int32
@@ -396,7 +396,7 @@ func TestAsyncSignal_EmitAndWaitRunsListenersConcurrently(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		sig.EmitAndWait(context.Background(), 1)
+		sig.TryEmit(context.Background(), 1)
 		close(done)
 	}()
 
@@ -406,11 +406,11 @@ func TestAsyncSignal_EmitAndWaitRunsListenersConcurrently(t *testing.T) {
 	<-done
 
 	if atomic.LoadInt32(&sawOverlap) == 0 {
-		t.Fatal("Expected EmitAndWait listeners to run concurrently")
+		t.Fatal("Expected TryEmit listeners to run concurrently")
 	}
 }
 
-func TestAsyncSignal_EmitAndWaitSkipsWhenContextCanceled(t *testing.T) {
+func TestAsyncSignal_TryEmitSkipsWhenContextCanceled(t *testing.T) {
 	sig := signals.New[int]()
 
 	var called int32
@@ -421,14 +421,14 @@ func TestAsyncSignal_EmitAndWaitSkipsWhenContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	sig.EmitAndWait(ctx, 1)
+	sig.TryEmit(ctx, 1)
 
 	if atomic.LoadInt32(&called) != 0 {
 		t.Fatalf("Expected no listener calls when context is canceled, got %d", called)
 	}
 }
 
-func TestAsyncSignal_EmitAndWaitZeroValueUsable(t *testing.T) {
+func TestAsyncSignal_TryEmitZeroValueUsable(t *testing.T) {
 	var sig signals.AsyncSignal[int]
 
 	var called int32
@@ -436,10 +436,10 @@ func TestAsyncSignal_EmitAndWaitZeroValueUsable(t *testing.T) {
 		atomic.AddInt32(&called, 1)
 	})
 
-	sig.EmitAndWait(context.Background(), 1)
+	sig.TryEmit(context.Background(), 1)
 
 	if atomic.LoadInt32(&called) != 1 {
-		t.Fatalf("Expected zero-value AsyncSignal EmitAndWait to invoke listener, got %d", called)
+		t.Fatalf("Expected zero-value AsyncSignal TryEmit to invoke listener, got %d", called)
 	}
 }
 
@@ -459,8 +459,8 @@ func TestSetPanicHandlerReceivesListenerPanic(t *testing.T) {
 		panic("boom")
 	})
 
-	// EmitAndWait guarantees the panicking listener has finished.
-	sig.EmitAndWait(context.Background(), 1)
+	// TryEmit guarantees the panicking listener has finished.
+	sig.TryEmit(context.Background(), 1)
 
 	select {
 	case r := <-got:

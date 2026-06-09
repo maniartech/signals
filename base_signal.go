@@ -78,6 +78,13 @@ type BaseSignal[T any] struct {
 
 	// growthFunc determines capacity allocation when the subscriber list needs to grow
 	growthFunc func(currentCap int) int
+
+	// onErr holds the per-signal error sinks registered via OnError. A non-nil error
+	// returned by an AddListenerWithErr listener on the Emit path is routed to every
+	// sink (on both sync and async signals). Stored as an immutable slice behind an
+	// atomic pointer (copy-on-write registration under onErrMu) so routing is lock-free.
+	onErr   atomic.Pointer[[]func(context.Context, error)]
+	onErrMu sync.Mutex
 }
 
 // SignalOptions allows advanced users to customize memory allocation and growth behavior
@@ -449,4 +456,45 @@ func (s *BaseSignal[T]) HasKey(key string) bool {
 	defer s.writeMu.Unlock()
 	_, ok := s.subscribersMap[key]
 	return ok
+}
+
+// OnError registers a sink invoked when an error-returning listener (added via
+// AddListenerWithErr) returns a non-nil error during Emit. Multiple sinks may be
+// registered; all are invoked for every error. Sinks run on the goroutine that
+// invoked the failing listener (the caller's for sync, a handler goroutine for
+// async), so keep them cheap and non-blocking. A panic inside a sink is recovered
+// (routed to SetPanicHandler) and does not stop the remaining sinks. OnError is safe
+// for concurrent use. Errors on the TryEmit path are returned, not routed here.
+func (s *BaseSignal[T]) OnError(sink func(ctx context.Context, err error)) {
+	if sink == nil {
+		return
+	}
+	s.onErrMu.Lock()
+	defer s.onErrMu.Unlock()
+	var next []func(context.Context, error)
+	if cur := s.onErr.Load(); cur != nil {
+		next = append(next, *cur...)
+	}
+	next = append(next, sink)
+	s.onErr.Store(&next)
+}
+
+// routeError delivers err to every registered OnError sink. Each sink is isolated: a
+// panicking sink is recovered (routed to SetPanicHandler) and does not prevent the
+// remaining sinks from running.
+func (s *BaseSignal[T]) routeError(ctx context.Context, err error) {
+	p := s.onErr.Load()
+	if p == nil {
+		return
+	}
+	for _, sink := range *p {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					handleListenerPanic(r)
+				}
+			}()
+			sink(ctx, err)
+		}()
+	}
 }

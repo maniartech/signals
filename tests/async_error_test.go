@@ -14,7 +14,7 @@ import (
 )
 
 // Phase 4B / FR-5 + ADR 0001 §B: async error model.
-//   I10 EmitAndWaitErr aggregation (exactly those errors, deterministic order, nil iff all ok)
+//   I10 TryEmit aggregation (exactly those errors, deterministic order, nil iff all ok)
 //   I11 OnError routing to every sink (multi-sink fan-out)
 //   I14 a panicking OnError sink is isolated (does not crash / stop other sinks)
 
@@ -83,9 +83,9 @@ func TestAsyncErr_NoSinkIsNoOp(t *testing.T) {
 	}
 }
 
-// I10: EmitAndWaitErr returns exactly the failing handlers' errors, in registration
+// I10: TryEmit returns exactly the failing handlers' errors, in registration
 // order, and nil when all succeed. Plain listeners never contribute.
-func TestAsyncErr_EmitAndWaitErrAggregates(t *testing.T) {
+func TestAsyncErr_TryEmitAggregates(t *testing.T) {
 	sig := signals.New[int]()
 	eA := errors.New("errA")
 	eC := errors.New("errC")
@@ -94,7 +94,7 @@ func TestAsyncErr_EmitAndWaitErrAggregates(t *testing.T) {
 	sig.AddListenerWithErr(func(context.Context, int) error { return eC }, "c")  // fails
 	sig.AddListenerWithErr(func(context.Context, int) error { return nil }, "d") // ok
 
-	err := sig.EmitAndWaitErr(context.Background(), 1)
+	err := sig.TryEmit(context.Background(), 1)
 	if !errors.Is(err, eA) || !errors.Is(err, eC) {
 		t.Fatalf("joined err = %v; want both errA and errC", err)
 	}
@@ -106,38 +106,38 @@ func TestAsyncErr_EmitAndWaitErrAggregates(t *testing.T) {
 	ok := signals.New[int]()
 	ok.AddListenerWithErr(func(context.Context, int) error { return nil })
 	ok.AddListener(func(context.Context, int) {})
-	if err := ok.EmitAndWaitErr(context.Background(), 1); err != nil {
-		t.Fatalf("all-succeed EmitAndWaitErr = %v; want nil", err)
+	if err := ok.TryEmit(context.Background(), 1); err != nil {
+		t.Fatalf("all-succeed TryEmit = %v; want nil", err)
 	}
 
 	// Empty signal → nil.
-	if err := signals.New[int]().EmitAndWaitErr(context.Background(), 1); err != nil {
-		t.Fatalf("empty EmitAndWaitErr = %v; want nil", err)
+	if err := signals.New[int]().TryEmit(context.Background(), 1); err != nil {
+		t.Fatalf("empty TryEmit = %v; want nil", err)
 	}
 	// Pre-canceled ctx → ctx.Err().
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := sig.EmitAndWaitErr(ctx, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-canceled EmitAndWaitErr = %v; want context.Canceled", err)
+	if err := sig.TryEmit(ctx, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled TryEmit = %v; want context.Canceled", err)
 	}
 }
 
-// EmitAndWaitErr under a cancellable context where all handlers complete (covers the
+// TryEmit under a cancellable context where all handlers complete (covers the
 // done-completes-first branch with a non-nil errs slice).
-func TestAsyncErr_EmitAndWaitErrCompletesUnderCancellableCtx(t *testing.T) {
+func TestAsyncErr_TryEmitCompletesUnderCancellableCtx(t *testing.T) {
 	sig := signals.New[int]()
 	e := errors.New("e")
 	sig.AddListenerWithErr(func(context.Context, int) error { return e })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := sig.EmitAndWaitErr(ctx, 1); !errors.Is(err, e) {
-		t.Fatalf("EmitAndWaitErr = %v; want e", err)
+	if err := sig.TryEmit(ctx, 1); !errors.Is(err, e) {
+		t.Fatalf("TryEmit = %v; want e", err)
 	}
 }
 
 // ctx-liveness for the error variant: a hung handler must not hang the waiter; it
 // returns ctx.Err() at the deadline (and must not read the in-progress errs slice).
-func TestAsyncErr_EmitAndWaitErrRespectsCtxDeadline(t *testing.T) {
+func TestAsyncErr_TryEmitRespectsCtxDeadline(t *testing.T) {
 	sig := signals.New[int]()
 	block := make(chan struct{})
 	defer close(block)
@@ -146,14 +146,14 @@ func TestAsyncErr_EmitAndWaitErrRespectsCtxDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- sig.EmitAndWaitErr(ctx, 1) }()
+	go func() { done <- sig.TryEmit(ctx, 1) }()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("EmitAndWaitErr = %v; want DeadlineExceeded", err)
+			t.Fatalf("TryEmit = %v; want DeadlineExceeded", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("EmitAndWaitErr hung on a stuck error-returning handler")
+		t.Fatal("TryEmit hung on a stuck error-returning handler")
 	}
 }
 
@@ -208,7 +208,7 @@ func TestI14_PanicHandlerThatPanicsIsContained(t *testing.T) {
 	sig.AddListener(func(context.Context, int) { panic("listener panic") }, "boom")
 	sig.AddListener(func(context.Context, int) { atomic.AddInt32(&sibling, 1) }, "ok")
 
-	sig.EmitAndWait(context.Background(), 1) // must return; process must survive
+	sig.TryEmit(context.Background(), 1) // must return; process must survive
 
 	if atomic.LoadInt32(&sibling) != 1 {
 		t.Fatal("sibling listener did not run — the failure path was not contained")
@@ -225,8 +225,8 @@ func TestI14_AsyncOnceHandlerPanicConsumed(t *testing.T) {
 	var calls int32
 	sig.AddOnce(func(context.Context, int) { atomic.AddInt32(&calls, 1); panic("once boom") })
 
-	sig.EmitAndWait(context.Background(), 1) // fires, panics (recovered), self-removes
-	sig.EmitAndWait(context.Background(), 2) // must NOT fire again
+	sig.TryEmit(context.Background(), 1) // fires, panics (recovered), self-removes
+	sig.TryEmit(context.Background(), 2) // must NOT fire again
 
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("async once handler fired %d times; want 1 (consumed on attempt)", got)
@@ -264,7 +264,7 @@ func TestI14_SyncOnceHandlerPanicConsumed(t *testing.T) {
 //   I9  Emit is non-blocking even with a saturated bound
 //   I13 a panicking handler still releases its slot (no bounded-pool deadlock)
 //   I16 no silent drop — every handler eventually runs (M ≫ N)
-//   ctx-liveness — EmitAndWait returns at the ctx deadline despite a hung handler
+//   ctx-liveness — TryEmit returns at the ctx deadline despite a hung handler
 
 func TestBounded_DefaultMaxConcurrent(t *testing.T) {
 	if got := signals.DefaultMaxConcurrent(); got != 2*runtime.NumCPU() {
@@ -299,7 +299,7 @@ func TestBounded_ConcurrencyNeverExceedsLimit(t *testing.T) {
 	var wg sync.WaitGroup
 	for e := 0; e < 5; e++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); sig.EmitAndWait(context.Background(), 1) }()
+		go func() { defer wg.Done(); sig.TryEmit(context.Background(), 1) }()
 	}
 
 	// Let handlers pile up against the bound, then release them all.
@@ -355,7 +355,7 @@ func TestBounded_SlotReleasedOnPanic(t *testing.T) {
 	ran := make(chan struct{}, 1)
 	sig.AddListener(func(context.Context, int) { ran <- struct{}{} }, "after")
 
-	sig.EmitAndWait(context.Background(), 1)
+	sig.TryEmit(context.Background(), 1)
 	select {
 	case <-ran:
 	case <-time.After(2 * time.Second):
@@ -367,7 +367,7 @@ func TestBounded_SlotReleasedOnPanic(t *testing.T) {
 	sig.Reset()
 	sig.AddListener(func(context.Context, int) { atomic.AddInt32(&n, 1) })
 	for i := 0; i < 50; i++ {
-		sig.EmitAndWait(context.Background(), i)
+		sig.TryEmit(context.Background(), i)
 	}
 	if atomic.LoadInt32(&n) != 50 {
 		t.Fatalf("after a panic, only %d/50 later emits ran — capacity leaked", n)
@@ -383,13 +383,13 @@ func TestBounded_NoSilentDrop(t *testing.T) {
 	for i := 0; i < listeners; i++ {
 		sig.AddListener(func(context.Context, int) { atomic.AddInt32(&ran, 1) })
 	}
-	sig.EmitAndWait(context.Background(), 1)
+	sig.TryEmit(context.Background(), 1)
 	if got := atomic.LoadInt32(&ran); got != listeners {
 		t.Fatalf("ran %d/%d handlers — bound dropped work", got, listeners)
 	}
 }
 
-// Covers EmitAndWait under a CANCELLABLE context where handlers complete normally
+// Covers TryEmit under a CANCELLABLE context where handlers complete normally
 // (waitForOrCancel takes the done-completes-first path), and the bounded acquire's
 // cancellable-ctx success branch.
 func TestBounded_CompletesUnderCancellableCtx(t *testing.T) {
@@ -400,7 +400,7 @@ func TestBounded_CompletesUnderCancellableCtx(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sig.EmitAndWait(ctx, 1)
+	sig.TryEmit(ctx, 1)
 	if got := atomic.LoadInt32(&n); got != 3 {
 		t.Fatalf("ran %d/3 under cancellable ctx; want 3", got)
 	}
@@ -412,7 +412,7 @@ func TestBounded_NilContextAcquire(t *testing.T) {
 	var n int32
 	sig.AddListener(func(context.Context, int) { atomic.AddInt32(&n, 1) })
 	sig.AddListener(func(context.Context, int) { atomic.AddInt32(&n, 1) })
-	sig.EmitAndWait(nil, 1) //nolint:staticcheck // exercise nil-ctx bounded acquire
+	sig.TryEmit(nil, 1) //nolint:staticcheck // exercise nil-ctx bounded acquire
 	if got := atomic.LoadInt32(&n); got != 2 {
 		t.Fatalf("ran %d/2 under nil ctx; want 2", got)
 	}
@@ -455,17 +455,17 @@ func TestBounded_ParkedAcquireCancels(t *testing.T) {
 	<-inSlot                          // slot now occupied
 
 	// The slot is full, so this emit's acquire parks; Done is closed → cancel.
-	sig.EmitAndWait(doneNotErrCtx{done: closedDone()}, 2)
+	sig.TryEmit(doneNotErrCtx{done: closedDone()}, 2)
 
 	if got := atomic.LoadInt32(&ran); got != 1 {
-		t.Fatalf("ran=%d; the parked EmitAndWait acquire should cancel and run 0 (only the first emit ran)", got)
+		t.Fatalf("ran=%d; the parked TryEmit acquire should cancel and run 0 (only the first emit ran)", got)
 	}
 	close(block)
 }
 
-// ctx-liveness: EmitAndWait must return at the context deadline even if a handler
+// ctx-liveness: TryEmit must return at the context deadline even if a handler
 // is hung, rather than blocking forever on it.
-func TestBounded_EmitAndWaitRespectsCtxDeadline(t *testing.T) {
+func TestBounded_TryEmitRespectsCtxDeadline(t *testing.T) {
 	sig := signals.New[int]()
 	block := make(chan struct{})
 	defer close(block)
@@ -475,10 +475,10 @@ func TestBounded_EmitAndWaitRespectsCtxDeadline(t *testing.T) {
 	defer cancel()
 
 	done := make(chan struct{})
-	go func() { sig.EmitAndWait(ctx, 1); close(done) }()
+	go func() { sig.TryEmit(ctx, 1); close(done) }()
 	select {
 	case <-done: // returned at/after the deadline — good
 	case <-time.After(2 * time.Second):
-		t.Fatal("EmitAndWait hung on a stuck handler instead of returning at the ctx deadline")
+		t.Fatal("TryEmit hung on a stuck handler instead of returning at the ctx deadline")
 	}
 }

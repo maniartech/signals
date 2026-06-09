@@ -323,3 +323,26 @@ func TestSyncSignal_OrderPreservedAfterRemoval(t *testing.T) {
 		t.Fatalf("Expected listener order [1 3] after removal, got %v", order)
 	}
 }
+
+// SyncSignal.OnError: a listener error during Emit (which is best-effort) routes to
+// every registered OnError sink — symmetric with AsyncSignal — and Emit does not stop
+// the chain. (TryEmit, by contrast, returns the error and stops at the first.)
+func TestSyncSignal_OnErrorRoutesEmitErrors(t *testing.T) {
+	sig := signals.NewSync[int]()
+	boom := errors.New("boom")
+	var got error
+	afterRan := false
+	sig.OnError(nil) // ignored
+	sig.OnError(func(_ context.Context, err error) { got = err })
+	sig.AddListenerWithErr(func(context.Context, int) error { return boom }, "1")
+	sig.AddListener(func(context.Context, int) { afterRan = true }, "2")
+
+	sig.Emit(context.Background(), 1)
+
+	if !errors.Is(got, boom) {
+		t.Fatalf("sync OnError received %v; want boom", got)
+	}
+	if !afterRan {
+		t.Fatal("sync Emit must not stop the chain on a listener error (best-effort)")
+	}
+}

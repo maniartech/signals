@@ -90,6 +90,15 @@ func (s *SyncSignal[T]) HasKey(key string) bool {
 	return s.baseSignal.HasKey(key)
 }
 
+// OnError registers an error sink for the Emit path. See BaseSignal.OnError. On a
+// SyncSignal the sink runs inline on the caller's goroutine when an error-returning
+// listener fails during Emit (which is best-effort and does not stop the chain). Use
+// TryEmit to instead have errors returned and stop on the first.
+func (s *SyncSignal[T]) OnError(sink func(ctx context.Context, err error)) {
+	s.ensureBase()
+	s.baseSignal.OnError(sink)
+}
+
 // Emit synchronously invokes all registered listeners with the given payload.
 // Listeners are called sequentially in the order they were registered (though order
 // may change after removals due to swap-remove optimization).
@@ -119,7 +128,12 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 		}
 		sub := &subscribers[i]
 		if sub.listenerErr != nil {
-			_ = sub.listenerErr(ctx, payload)
+			// Emit is best-effort: a returned error does not stop the chain. Route it to
+			// the OnError sinks (symmetric with AsyncSignal) instead of discarding it —
+			// use TryEmit if you need errors returned and the chain to stop on the first.
+			if err := sub.listenerErr(ctx, payload); err != nil {
+				s.baseSignal.routeError(ctx, err)
+			}
 			continue
 		}
 		if sub.listener != nil {

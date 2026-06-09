@@ -60,9 +60,9 @@ func TestEdge_PreCanceledContextSkipsAll(t *testing.T) {
 	a := signals.New[int]()
 	var m int32
 	a.AddListener(func(context.Context, int) { atomic.AddInt32(&m, 1) })
-	a.EmitAndWait(ctx, 1)
+	a.TryEmit(ctx, 1)
 	if got := atomic.LoadInt32(&m); got != 0 {
-		t.Fatalf("EmitAndWait ran %d listeners under canceled ctx; want 0", got)
+		t.Fatalf("TryEmit ran %d listeners under canceled ctx; want 0", got)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestEdge_EmptySignalIsNoOp(t *testing.T) {
 	}
 	a := signals.New[int]()
 	a.Emit(context.Background(), 1)
-	a.EmitAndWait(context.Background(), 1) // must not panic / must return
+	a.TryEmit(context.Background(), 1) // must not panic / must return
 }
 
 // --- duplicate keyed add ⇒ -1, no-op ---
@@ -142,8 +142,8 @@ func TestEdge_EmptyStringKeyIsUnkeyed(t *testing.T) {
 	if a.HasKey("") {
 		t.Fatal(`AddOnceWithKey("") must not register key ""`)
 	}
-	a.EmitAndWait(context.Background(), 1)
-	a.EmitAndWait(context.Background(), 1)
+	a.TryEmit(context.Background(), 1)
+	a.TryEmit(context.Background(), 1)
 	if got := atomic.LoadInt32(&once); got != 1 {
 		t.Fatalf("empty-key one-shot fired %d times; want 1", got)
 	}
@@ -232,8 +232,8 @@ func TestRetro_Async_AddOnceWithKey(t *testing.T) {
 	sig := signals.New[int]()
 	var n int32
 	sig.AddOnceWithKey(func(context.Context, int) { atomic.AddInt32(&n, 1) }, "once")
-	sig.EmitAndWait(context.Background(), 1)
-	sig.EmitAndWait(context.Background(), 2)
+	sig.TryEmit(context.Background(), 1)
+	sig.TryEmit(context.Background(), 2)
 	if got := atomic.LoadInt32(&n); got != 1 {
 		t.Fatalf("async AddOnceWithKey fired %d times, want 1", got)
 	}
@@ -306,7 +306,7 @@ func TestRetro_AsyncDispatch_CancelMidLoopStops(t *testing.T) {
 	}
 
 	ctx := &trippingCtx{trip: 4}
-	sig.EmitAndWait(ctx, 1)
+	sig.TryEmit(ctx, 1)
 
 	got := atomic.LoadInt32(&ran)
 	if got == 0 || got >= n {

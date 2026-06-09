@@ -80,9 +80,9 @@ func TestUsability_ComponentMountUnmount(t *testing.T) {
 	const key = "widget-42"
 
 	dashboard.AddListener(func(context.Context, int) { atomic.AddInt32(&refreshed, 1) }, key)
-	dashboard.EmitAndWait(context.Background(), 1) // mounted → refreshes
-	dashboard.RemoveListener(key)                  // unmount
-	dashboard.EmitAndWait(context.Background(), 2) // gone → no refresh
+	dashboard.TryEmit(context.Background(), 1) // mounted → refreshes
+	dashboard.RemoveListener(key)              // unmount
+	dashboard.TryEmit(context.Background(), 2) // gone → no refresh
 
 	if got := atomic.LoadInt32(&refreshed); got != 1 {
 		t.Fatalf("component refreshed %d times; want 1 (removed on unmount)", got)
@@ -115,7 +115,7 @@ func TestUsability_OneTimeMigrationOnFirstConnect(t *testing.T) {
 	connected.AddOnce(func(context.Context, int) { atomic.AddInt32(&migrations, 1) })
 
 	for i := 0; i < 5; i++ {
-		connected.EmitAndWait(context.Background(), i)
+		connected.TryEmit(context.Background(), i)
 	}
 	if got := atomic.LoadInt32(&migrations); got != 1 {
 		t.Fatalf("migration ran %d times; want exactly 1", got)
@@ -133,9 +133,9 @@ func TestUsability_SessionTeardown(t *testing.T) {
 	session.AddListener(func(context.Context, int) { atomic.AddInt32(&events, 1) }, "audit")
 	session.AddListener(func(context.Context, int) { atomic.AddInt32(&events, 1) }, "cache")
 
-	session.EmitAndWait(context.Background(), 1) // 2 listeners fire
-	session.Reset()                              // logout
-	session.EmitAndWait(context.Background(), 2) // nothing fires
+	session.TryEmit(context.Background(), 1) // 2 listeners fire
+	session.Reset()                          // logout
+	session.TryEmit(context.Background(), 2) // nothing fires
 
 	if got := atomic.LoadInt32(&events); got != 2 {
 		t.Fatalf("got %d events; want 2 (Reset must drop all listeners)", got)
@@ -155,7 +155,7 @@ func TestUsability_SharedEventRegistryFanOut(t *testing.T) {
 	userLoggedIn.AddListener(func(_ context.Context, u User) { atomic.AddInt32(&audited, 1) }, "audit/login")
 	userLoggedIn.AddListener(func(_ context.Context, u User) { atomic.AddInt32(&cacheWarmed, 1) }, "cache/warm")
 
-	userLoggedIn.EmitAndWait(context.Background(), User{ID: 7})
+	userLoggedIn.TryEmit(context.Background(), User{ID: 7})
 
 	if atomic.LoadInt32(&audited) != 1 || atomic.LoadInt32(&cacheWarmed) != 1 {
 		t.Fatalf("fan-out incomplete: audited=%d cacheWarmed=%d", audited, cacheWarmed)
@@ -195,7 +195,7 @@ func TestUsability_ResultAggregationReportsFailedChannel(t *testing.T) {
 	notify.AddListenerWithErr(func(context.Context, Alert) error { return pagerDown }, "pagerduty")
 	notify.AddListenerWithErr(func(context.Context, Alert) error { return nil }, "email")
 
-	err := notify.EmitAndWaitErr(context.Background(), Alert{Msg: "disk full"})
+	err := notify.TryEmit(context.Background(), Alert{Msg: "disk full"})
 	if !errors.Is(err, pagerDown) {
 		t.Fatalf("aggregated error = %v; want it to identify the PagerDuty failure", err)
 	}
@@ -232,7 +232,7 @@ func TestUsability_BoundedConcurrencyProtectsDownstream(t *testing.T) {
 		}
 		close(gate)
 	}()
-	writes.EmitAndWait(context.Background(), 1)
+	writes.TryEmit(context.Background(), 1)
 
 	if got := atomic.LoadInt32(&peak); got > dbConns {
 		t.Fatalf("peak concurrency %d exceeded the pool limit %d", got, dbConns)
@@ -242,16 +242,16 @@ func TestUsability_BoundedConcurrencyProtectsDownstream(t *testing.T) {
 	}
 }
 
-// Pattern: Backpressure — EmitAndWait makes the producer wait for completion, so a
+// Pattern: Backpressure — TryEmit makes the producer wait for completion, so a
 // loss-intolerant producer self-throttles and never outruns its consumer (no loss).
-func TestUsability_BackpressureViaEmitAndWait(t *testing.T) {
+func TestUsability_BackpressureViaTryEmit(t *testing.T) {
 	ledger := signals.New[int]()
 	var written int32
 	ledger.AddListener(func(context.Context, int) { atomic.AddInt32(&written, 1) })
 
 	const trades = 100
 	for i := 0; i < trades; i++ {
-		ledger.EmitAndWait(context.Background(), i) // blocks until written — no trade is lost
+		ledger.TryEmit(context.Background(), i) // blocks until written — no trade is lost
 	}
 	if got := atomic.LoadInt32(&written); got != trades {
 		t.Fatalf("wrote %d/%d trades; backpressure must lose none", got, trades)

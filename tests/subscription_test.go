@@ -83,10 +83,10 @@ func TestAddOnce_AsyncFiresOnceThenAutoRemoves(t *testing.T) {
 	var count int32
 	sig.AddOnce(func(context.Context, int) { atomic.AddInt32(&count, 1) })
 
-	// EmitAndWait blocks until the (single) listener goroutine — including the
+	// TryEmit blocks until the (single) listener goroutine — including the
 	// internal self-removal — has completed.
-	sig.EmitAndWait(context.Background(), 1)
-	sig.EmitAndWait(context.Background(), 2)
+	sig.TryEmit(context.Background(), 1)
+	sig.TryEmit(context.Background(), 2)
 
 	if got := atomic.LoadInt32(&count); got != 1 {
 		t.Fatalf("expected handler to fire exactly once, fired %d times", got)
@@ -109,7 +109,7 @@ func TestAddOnce_ConcurrentExactlyOnce(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				sig.EmitAndWait(context.Background(), 1)
+				sig.TryEmit(context.Background(), 1)
 			}()
 		}
 		wg.Wait()

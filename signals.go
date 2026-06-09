@@ -20,6 +20,25 @@ type Signal[T any] interface {
 	//	signal.Emit(context.Background(), 42)
 	Emit(ctx context.Context, payload T)
 
+	// TryEmit invokes all listeners, waits for them to finish, and returns any error.
+	// It returns nil if no listener failed.
+	//
+	// Behavior differs by signal type (both wait for completion and report errors):
+	//   - SyncSignal: invokes listeners sequentially and STOPS at the first error
+	//     (or canceled context), returning that error — transactional.
+	//   - AsyncSignal: invokes listeners concurrently, waits for all, and returns the
+	//     errors.Join of every failure (it cannot stop-on-first across goroutines).
+	//
+	// In both cases a non-nil result means "at least one listener failed". Call it and
+	// ignore the result when you only need to wait for completion.
+	TryEmit(ctx context.Context, payload T) error
+
+	// OnError registers a sink invoked when an error-returning listener (added via
+	// AddListenerWithErr) returns a non-nil error on the Emit (best-effort) path.
+	// Multiple sinks may be registered. Errors on the TryEmit path are returned, not
+	// routed here. Keep sinks cheap and non-blocking.
+	OnError(sink func(ctx context.Context, err error))
+
 	// AddListener adds a listener to the signal.
 	//
 	// The listener will be called whenever the signal is emitted. It returns the

@@ -13,8 +13,8 @@ import (
 // This is the default implementation. It provides the same functionality as
 // the SyncSignal but the listeners are called in a separate goroutine.
 // This means that all listeners are called asynchronously. Emit is fire-and-forget
-// and does not wait for listeners to finish. Use EmitAndWait when completion
-// of all listeners must be awaited.
+// and does not wait for listeners to finish. Use TryEmit when completion of all
+// listeners must be awaited (and to observe their errors).
 type AsyncSignal[T any] struct {
 	baseSignal *BaseSignal[T]
 	baseOnce   sync.Once
@@ -23,13 +23,6 @@ type AsyncSignal[T any] struct {
 	// once. It is nil when no MaxConcurrent bound is configured, in which case
 	// dispatch is unbounded (a goroutine per handler). Set once at construction.
 	slots chan struct{}
-
-	// onErr holds the per-signal error sinks registered via OnError. Errors returned
-	// by AddListenerWithErr handlers on the fire-and-forget Emit path are routed to
-	// every sink. Stored as an immutable slice behind an atomic pointer (copy-on-write
-	// registration under onErrMu) so routing is lock-free and concurrency-safe.
-	onErr   atomic.Pointer[[]func(context.Context, error)]
-	onErrMu sync.Mutex
 }
 
 // DefaultMaxConcurrent returns the recommended MaxConcurrent value (2 × NumCPU) for
@@ -130,56 +123,22 @@ func (s *AsyncSignal[T]) IsEmpty() bool {
 	return s.baseSignal.IsEmpty()
 }
 
-// AddListenerWithErr registers an error-returning listener. Unlike SyncSignal (where
-// errors propagate through TryEmit), on an AsyncSignal a non-nil error returned by
-// the handler is routed to the sinks registered via OnError on the fire-and-forget
-// Emit path, or collected and returned by EmitAndWaitErr. See
+// AddListenerWithErr registers an error-returning listener. On an AsyncSignal a
+// non-nil error returned by the handler is routed to the sinks registered via OnError
+// on the fire-and-forget Emit path, or collected and returned by TryEmit. See
 // BaseSignal.AddListenerWithErr for registration details.
 func (s *AsyncSignal[T]) AddListenerWithErr(handler SignalListenerErr[T], key ...string) int {
 	s.ensureBase()
 	return s.baseSignal.AddListenerWithErr(handler, key...)
 }
 
-// OnError registers a sink invoked when an error-returning listener (added via
-// AddListenerWithErr) returns a non-nil error during a fire-and-forget Emit. Multiple
-// sinks may be registered; all are invoked for every error. Sinks run on the handler's
-// own goroutine, so keep them cheap and non-blocking — a blocking sink holds its
-// concurrency slot exactly like a blocking listener would. A panic inside a sink is
-// recovered and routed to SetPanicHandler and does not stop the remaining sinks.
-// OnError is safe for concurrent use. Errors on the EmitAndWaitErr path are returned,
-// not routed here.
+// OnError registers an error sink for the Emit path. See BaseSignal.OnError. On an
+// AsyncSignal the sink runs on the failing listener's handler goroutine (keep it
+// cheap and non-blocking — a blocking sink holds its concurrency slot like a blocking
+// listener). Errors on the TryEmit path are returned, not routed here.
 func (s *AsyncSignal[T]) OnError(sink func(ctx context.Context, err error)) {
-	if sink == nil {
-		return
-	}
-	s.onErrMu.Lock()
-	defer s.onErrMu.Unlock()
-	var next []func(context.Context, error)
-	if cur := s.onErr.Load(); cur != nil {
-		next = append(next, *cur...)
-	}
-	next = append(next, sink)
-	s.onErr.Store(&next)
-}
-
-// routeError delivers err to every registered OnError sink. Each sink is isolated:
-// a panicking sink is recovered (routed to SetPanicHandler) and does not prevent the
-// remaining sinks from running.
-func (s *AsyncSignal[T]) routeError(ctx context.Context, err error) {
-	p := s.onErr.Load()
-	if p == nil {
-		return
-	}
-	for _, sink := range *p {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					handleListenerPanic(r)
-				}
-			}()
-			sink(ctx, err)
-		}()
-	}
+	s.ensureBase()
+	s.baseSignal.OnError(sink)
 }
 
 // AddOnce registers a one-time listener. See BaseSignal.AddOnce for details.
@@ -221,7 +180,8 @@ func (s *AsyncSignal[T]) HasKey(key string) bool {
 // crash the process or prevent other listeners from running. Recovered panics are
 // reported to the handler configured via SetPanicHandler.
 //
-// Use EmitAndWait if the caller must block until all listeners have finished.
+// Use TryEmit if the caller must block until all listeners have finished (and
+// optionally observe their errors).
 func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	s.ensureBase()
 	if ctx != nil && ctx.Err() != nil {
@@ -238,41 +198,23 @@ func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
 	go s.dispatch(ctx, payload, subscribers, nil, nil)
 }
 
-// EmitAndWait invokes all current listeners asynchronously (each in its own
-// goroutine, concurrently) and blocks until every listener has returned.
+// TryEmit invokes all current listeners concurrently (each in its own goroutine),
+// waits for every one to finish, and returns the combined error of any
+// error-returning listeners (added via AddListenerWithErr).
 //
-// Unlike Emit, EmitAndWait runs the dispatcher on the caller's goroutine and waits.
+// Unlike the sequential SyncSignal.TryEmit, it does NOT stop at the first error — all
+// listeners run, and TryEmit returns the errors.Join of every non-nil error in
+// registration order (deterministic, not completion order). It returns nil iff every
+// listener succeeded; plain listeners (no error) never contribute. This is the async
+// "wait for completion" emit — call it and ignore the result if you only need to wait.
+//
 // A configured MaxConcurrent bound is honored. The wait is ctx-aware: if ctx is
-// canceled or its deadline expires while listeners are still running, EmitAndWait
-// returns promptly rather than blocking indefinitely on a slow or hung listener.
-// (Go cannot force-cancel a running listener goroutine; the guaranteed property is
-// the caller's liveness — the detached listener may continue in the background.)
-//
-// Cancellation and panic-recovery semantics otherwise match Emit.
-func (s *AsyncSignal[T]) EmitAndWait(ctx context.Context, payload T) {
-	s.ensureBase()
-	if ctx != nil && ctx.Err() != nil {
-		return
-	}
-	subscribers := s.baseSignal.load() // snapshot at call time
-	if len(subscribers) == 0 {
-		return
-	}
-	var wg sync.WaitGroup
-	s.dispatch(ctx, payload, subscribers, &wg, nil)
-	waitForOrCancel(ctx, &wg)
-}
-
-// EmitAndWaitErr is EmitAndWait that also collects and returns the errors of any
-// error-returning listeners (added via AddListenerWithErr). It runs all listeners
-// concurrently, waits for completion, and returns the errors.Join of every non-nil
-// error in registration order (deterministic, not completion order); it returns nil
-// iff every listener succeeded. Plain listeners (no error) never contribute.
-//
-// Like EmitAndWait it is ctx-aware: if ctx is canceled or its deadline expires while
-// listeners are still running, EmitAndWaitErr returns ctx.Err() promptly without
-// waiting for the stragglers (and without reading their still-in-progress results).
-func (s *AsyncSignal[T]) EmitAndWaitErr(ctx context.Context, payload T) error {
+// canceled or its deadline expires while listeners are still running, TryEmit returns
+// ctx.Err() promptly rather than blocking indefinitely on a slow or hung listener
+// (and without reading the still-in-progress results). Go cannot force-cancel a
+// running listener goroutine; the guaranteed property is the caller's liveness — a
+// detached listener may continue in the background. Panic-recovery matches Emit.
+func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 	s.ensureBase()
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
@@ -306,27 +248,7 @@ func (s *AsyncSignal[T]) EmitAndWaitErr(ctx context.Context, payload T) error {
 	}
 }
 
-// waitForOrCancel blocks until wg is done, or (if ctx is cancellable) until ctx is
-// done — whichever comes first. A non-cancellable ctx (nil or one whose Done()
-// returns nil, e.g. context.Background) takes the plain wg.Wait() path with no
-// extra goroutine.
-func waitForOrCancel(ctx context.Context, wg *sync.WaitGroup) {
-	if ctx == nil || ctx.Done() == nil {
-		wg.Wait()
-		return
-	}
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
-}
-
-// dispatch contains the shared scheduling logic for Emit and EmitAndWait. Each
+// dispatch contains the shared scheduling logic for Emit and TryEmit. Each
 // listener runs in its own goroutine. When a MaxConcurrent bound is configured,
 // a semaphore slot is acquired before each handler is started and released when it
 // finishes (on every exit path — including a recovered panic). When wg is non-nil,
@@ -387,7 +309,7 @@ func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []
 						if errs != nil {
 							errs[idx] = err // distinct index — no lock needed
 						} else {
-							s.routeError(ctx, err)
+							s.baseSignal.routeError(ctx, err)
 						}
 					}
 					return

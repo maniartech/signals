@@ -244,10 +244,10 @@ func FuzzConcurrentOps_Race(f *testing.F) {
 }
 
 // FuzzAsyncErrorModel drives arbitrary add/remove/emit sequences on an async signal
-// whose listeners may succeed or fail, and asserts the EmitAndWaitErr aggregation
+// whose listeners may succeed or fail, and asserts the TryEmit aggregation
 // invariant (I10): the number of joined errors returned equals the number of
 // currently-registered FAILING listeners — no error lost, none invented — and nothing
-// ever panics. EmitAndWait makes each emission deterministic. Not run under -race
+// ever panics. TryEmit makes each emission deterministic. Not run under -race
 // (async fan-out exhausts ThreadSanitizer; -race concurrency is covered by the stress
 // tests). Run: go test . -run '^$' -fuzz FuzzAsyncErrorModel -fuzztime 60s
 func FuzzAsyncErrorModel(f *testing.F) {
@@ -287,9 +287,9 @@ func FuzzAsyncErrorModel(f *testing.F) {
 				delete(fail, key)
 				delete(ok, key)
 			case 3: // emit and wait for errors — count must equal the live failing set
-				got := joinedCount(sig.EmitAndWaitErr(context.Background(), i))
+				got := joinedCount(sig.TryEmit(context.Background(), i))
 				if got != len(fail) {
-					t.Fatalf("op %d: EmitAndWaitErr returned %d errors; want %d (live failing listeners)", i, got, len(fail))
+					t.Fatalf("op %d: TryEmit returned %d errors; want %d (live failing listeners)", i, got, len(fail))
 				}
 			}
 		}
@@ -357,7 +357,7 @@ func TestStress_AsyncNoGoroutineLeak(t *testing.T) {
 			key := fmt.Sprintf("g%d", id)
 			for j := 0; j < iters; j++ {
 				sig.AddListener(noop, key)
-				sig.EmitAndWait(ctx, id) // wait so each emission's handler goroutines complete
+				sig.TryEmit(ctx, id) // wait so each emission's handler goroutines complete
 				sig.RemoveListener(key)
 			}
 		}(i)
@@ -414,7 +414,7 @@ func TestStress_BoundedAsyncUnderLoad(t *testing.T) {
 			for j := 0; j < iters; j++ {
 				sig.AddListener(noop, key)
 				if id%2 == 0 {
-					sig.EmitAndWait(context.Background(), id)
+					sig.TryEmit(context.Background(), id)
 				} else {
 					sig.Emit(context.Background(), id)
 				}
@@ -549,8 +549,8 @@ func TestReentrancy_AsyncHandlerRemovesSelf(t *testing.T) {
 		sig.RemoveListener("self")
 	}, "self")
 
-	sig.EmitAndWait(context.Background(), 1) // runs once, removes itself
-	sig.EmitAndWait(context.Background(), 2) // gone
+	sig.TryEmit(context.Background(), 1) // runs once, removes itself
+	sig.TryEmit(context.Background(), 2) // gone
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("self-removing handler ran %d times; want 1", got)
 	}
