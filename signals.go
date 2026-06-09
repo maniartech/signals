@@ -117,10 +117,16 @@ type Signal[T any] interface {
 }
 
 // NewWithOptions creates a new async Signal with custom allocation/growth options.
+// If opts.MaxConcurrent > 0, async dispatch is bounded to that many concurrent
+// handlers via a counting semaphore; otherwise dispatch is unbounded (the default).
 func NewWithOptions[T any](opts *SignalOptions) *AsyncSignal[T] {
-	return &AsyncSignal[T]{
+	s := &AsyncSignal[T]{
 		baseSignal: NewBaseSignal[T](opts),
 	}
+	if opts != nil && opts.MaxConcurrent > 0 {
+		s.slots = make(chan struct{}, opts.MaxConcurrent)
+	}
+	return s
 }
 
 // NewSyncWithOptions creates a new sync Signal with custom allocation/growth options.

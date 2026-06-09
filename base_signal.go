@@ -95,6 +95,25 @@ type SignalOptions struct {
 	// It receives the current capacity and returns the desired new capacity.
 	// Default uses a sequence of prime numbers for optimal performance.
 	GrowthFunc func(currentCap int) int
+
+	// MaxConcurrent bounds how many AsyncSignal handler goroutines may run at once
+	// (a counting semaphore — there is no persistent worker pool and no Close()).
+	//
+	//   0 / unset → UNBOUNDED (a goroutine per handler, the safe default).
+	//   > 0       → at most this many handlers execute concurrently; excess parks
+	//               (cheaply) until a slot frees. Emit never blocks the caller; the
+	//               parking happens in the background dispatcher.
+	//   < 0       → treated as unset (unbounded).
+	//
+	// Bounding is an INFORMED OPT-IN: a bound can silently STARVE long-running
+	// listeners (only MaxConcurrent run; the rest never start) — which is why the
+	// default is unbounded. The bound caps concurrent *execution*, NOT the pending
+	// backlog: under sustained overload, parked dispatch grows without a hard limit.
+	// Size it to the slowest dependency (e.g. a DB connection limit), never to the
+	// listener count. See signals.DefaultMaxConcurrent for a recommended value.
+	//
+	// Sync signals ignore this field. Has no effect once a signal is constructed.
+	MaxConcurrent int
 }
 
 // defaultInitialCapacity is the starting capacity for the subscribers slice.

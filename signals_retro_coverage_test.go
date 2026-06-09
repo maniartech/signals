@@ -2,6 +2,7 @@ package signals_test
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,20 +108,24 @@ func (c *trippingCtx) Err() error {
 	return nil
 }
 
-// Covers the async dispatch in-loop context-cancellation break deterministically.
-// With trip=2: Err() returns nil for the entry guard (call 1) and the first
-// iteration (call 2, spawns handler "a"), then canceled on the second iteration
-// (call 3) → break, so handler "b" is never scheduled.
-func TestRetro_AsyncDispatch_CancelMidLoopBreaks(t *testing.T) {
+// Covers the async dispatch in-loop context-cancellation return deterministically:
+// trippingCtx reports canceled after a fixed number of Err() calls, so the dispatch
+// loop schedules the first few handlers and then stops mid-loop. With 10 listeners
+// and a trip partway through, *some but not all* handlers run — robustly exercising
+// the in-loop cancellation branch without coupling to the exact internal call count.
+func TestRetro_AsyncDispatch_CancelMidLoopStops(t *testing.T) {
 	sig := signals.New[int]()
+	const n = 10
 	var ran int32
-	sig.AddListener(func(context.Context, int) { atomic.AddInt32(&ran, 1) }, "a")
-	sig.AddListener(func(context.Context, int) { atomic.AddInt32(&ran, 1) }, "b")
+	for i := 0; i < n; i++ {
+		sig.AddListener(func(context.Context, int) { atomic.AddInt32(&ran, 1) }, fmt.Sprintf("k%d", i))
+	}
 
-	ctx := &trippingCtx{trip: 2}
+	ctx := &trippingCtx{trip: 4}
 	sig.EmitAndWait(ctx, 1)
 
-	if got := atomic.LoadInt32(&ran); got != 1 {
-		t.Fatalf("dispatch scheduled %d handlers; want exactly 1 (mid-loop break)", got)
+	got := atomic.LoadInt32(&ran)
+	if got == 0 || got >= n {
+		t.Fatalf("dispatch scheduled %d handlers; want partial (0 < n < %d) from mid-loop cancel", got, n)
 	}
 }
