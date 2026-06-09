@@ -280,6 +280,12 @@ func (s *BaseSignal[T]) AddListenerWithErr(listener SignalListenerErr[T], key ..
 // removes itself. The one-shot guarantee is concurrency-safe: even if several
 // emissions run simultaneously, the handler is invoked at most once.
 //
+// Panic policy: the one-shot is "consumed on attempt". The listener is marked fired
+// and removed before the handler runs, so if the handler panics on its (only)
+// invocation it is NOT retried on a later emission — the single attempt is spent.
+// (On async signals the panic is recovered and routed to SetPanicHandler; on sync
+// signals it propagates to the Emit caller, as with any sync listener.)
+//
 // Returns the number of subscribers after adding the listener.
 func (s *BaseSignal[T]) AddOnce(handler SignalListener[T]) int {
 	return s.addOnce(handler, "", false)

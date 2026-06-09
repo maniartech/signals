@@ -69,14 +69,30 @@ func defaultPanicHandler(recovered any) {
 // panics. The default handler logs the recovered value using the standard
 // library logger. Pass nil to silently discard panics. SetPanicHandler is safe
 // for concurrent use.
+//
+// The handler should be cheap and MUST NOT panic; if it does, the secondary panic
+// is recovered and discarded (it cannot crash the process), but the originating
+// panic value is then lost to that handler. The handler is process-global: the last
+// call wins, and a library that sets it overrides its host application's handler —
+// so libraries should generally leave it to the application to configure.
 func SetPanicHandler(h func(recovered any)) {
 	f := panicHandlerFunc(h)
 	panicHandler.Store(&f)
 }
 
-// handleListenerPanic dispatches a recovered listener panic to the configured
-// panic handler, if any.
+// handleListenerPanic dispatches a recovered listener panic to the configured panic
+// handler, if any.
+//
+// The handler invocation is itself guarded by a recover: the panic handler is the
+// LAST line of defense, so it must be unbreakable. If a (buggy) panic handler panics,
+// that secondary panic is recovered and discarded here rather than propagating out of
+// the handler goroutine — where, unrecovered, it would crash the entire process and
+// thereby defeat the very panic isolation this function exists to provide. We discard
+// rather than re-report it: re-invoking any handler to report a handler failure risks
+// unbounded recursion. The contract (documented on SetPanicHandler) is simply that the
+// panic handler must not panic; if it does, we contain it.
 func handleListenerPanic(recovered any) {
+	defer func() { _ = recover() }()
 	if p := panicHandler.Load(); p != nil {
 		if h := *p; h != nil {
 			h(recovered)

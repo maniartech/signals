@@ -1,3 +1,14 @@
+//go:build !race
+
+// These tests assert exact allocation counts via testing.AllocsPerRun. Such
+// assertions are only valid WITHOUT the race detector: -race instruments every
+// memory access and allocates shadow memory, which perturbs the allocation profile
+// and makes exact-count assertions flaky (e.g. a concurrent zero-alloc emit can
+// report 1 alloc under -race when other tests' goroutines add GC pressure). The
+// emit/try-emit logic itself is exercised under -race by the rest of the suite; these
+// allocation contracts are verified in normal `go test` and the non-race CI coverage
+// job. Excluding them from -race keeps the race suite deterministic (no flaky tests).
+
 package signals_test
 
 import (

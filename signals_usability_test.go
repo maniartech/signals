@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/maniartech/signals"
 )
@@ -158,5 +159,101 @@ func TestUsability_SharedEventRegistryFanOut(t *testing.T) {
 
 	if atomic.LoadInt32(&audited) != 1 || atomic.LoadInt32(&cacheWarmed) != 1 {
 		t.Fatalf("fan-out incomplete: audited=%d cacheWarmed=%d", audited, cacheWarmed)
+	}
+}
+
+// Pattern: Async Error Routing — fire-and-forget delivery whose failures must be
+// surfaced (alerted) rather than lost, even though Emit returns immediately.
+func TestUsability_AsyncErrorRoutingAlertsOnFailure(t *testing.T) {
+	type Webhook struct{ URL string }
+	deliveries := signals.New[Webhook]()
+	failed := make(chan error, 1)
+	deliveries.OnError(func(_ context.Context, err error) { failed <- err })
+
+	wantErr := errors.New("502 from endpoint")
+	deliveries.AddListenerWithErr(func(context.Context, Webhook) error { return wantErr }, "deliver")
+
+	deliveries.Emit(context.Background(), Webhook{URL: "https://hooks.example/x"}) // returns at once
+
+	select {
+	case err := <-failed:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("OnError received %v; want %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("delivery failure was not routed to OnError")
+	}
+}
+
+// Pattern: Result Aggregation — fan an alert out to several channels concurrently and
+// report exactly which one(s) failed.
+func TestUsability_ResultAggregationReportsFailedChannel(t *testing.T) {
+	type Alert struct{ Msg string }
+	notify := signals.New[Alert]()
+	pagerDown := errors.New("pagerduty unreachable")
+	notify.AddListenerWithErr(func(context.Context, Alert) error { return nil }, "slack")
+	notify.AddListenerWithErr(func(context.Context, Alert) error { return pagerDown }, "pagerduty")
+	notify.AddListenerWithErr(func(context.Context, Alert) error { return nil }, "email")
+
+	err := notify.EmitAndWaitErr(context.Background(), Alert{Msg: "disk full"})
+	if !errors.Is(err, pagerDown) {
+		t.Fatalf("aggregated error = %v; want it to identify the PagerDuty failure", err)
+	}
+}
+
+// Pattern: Bounded Concurrency — size MaxConcurrent to a constrained downstream (e.g.
+// a database connection pool) so handlers never exceed it, and no work is dropped.
+func TestUsability_BoundedConcurrencyProtectsDownstream(t *testing.T) {
+	const dbConns = 5
+	const records = 40
+	writes := signals.NewWithOptions[int](&signals.SignalOptions{MaxConcurrent: dbConns})
+
+	var inFlight, peak, done int32
+	gate := make(chan struct{})
+	for i := 0; i < records; i++ {
+		writes.AddListener(func(context.Context, int) {
+			cur := atomic.AddInt32(&inFlight, 1)
+			for {
+				p := atomic.LoadInt32(&peak)
+				if cur <= p || atomic.CompareAndSwapInt32(&peak, p, cur) {
+					break
+				}
+			}
+			<-gate
+			atomic.AddInt32(&inFlight, -1)
+			atomic.AddInt32(&done, 1)
+		})
+	}
+
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for atomic.LoadInt32(&peak) < dbConns && time.Now().Before(deadline) {
+			time.Sleep(2 * time.Millisecond)
+		}
+		close(gate)
+	}()
+	writes.EmitAndWait(context.Background(), 1)
+
+	if got := atomic.LoadInt32(&peak); got > dbConns {
+		t.Fatalf("peak concurrency %d exceeded the pool limit %d", got, dbConns)
+	}
+	if got := atomic.LoadInt32(&done); got != records {
+		t.Fatalf("only %d/%d writes completed — work was dropped", got, records)
+	}
+}
+
+// Pattern: Backpressure — EmitAndWait makes the producer wait for completion, so a
+// loss-intolerant producer self-throttles and never outruns its consumer (no loss).
+func TestUsability_BackpressureViaEmitAndWait(t *testing.T) {
+	ledger := signals.New[int]()
+	var written int32
+	ledger.AddListener(func(context.Context, int) { atomic.AddInt32(&written, 1) })
+
+	const trades = 100
+	for i := 0; i < trades; i++ {
+		ledger.EmitAndWait(context.Background(), i) // blocks until written — no trade is lost
+	}
+	if got := atomic.LoadInt32(&written); got != trades {
+		t.Fatalf("wrote %d/%d trades; backpressure must lose none", got, trades)
 	}
 }
