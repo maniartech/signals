@@ -2,6 +2,7 @@ package signals_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -98,5 +99,58 @@ func FuzzConcurrentOps_Race(f *testing.F) {
 			}(w)
 		}
 		wg.Wait()
+	})
+}
+
+// FuzzAsyncErrorModel drives arbitrary add/remove/emit sequences on an async signal
+// whose listeners may succeed or fail, and asserts the EmitAndWaitErr aggregation
+// invariant (I10): the number of joined errors returned equals the number of
+// currently-registered FAILING listeners — no error lost, none invented — and nothing
+// ever panics. EmitAndWait makes each emission deterministic. Not run under -race
+// (async fan-out exhausts ThreadSanitizer; -race concurrency is covered by the stress
+// tests). Run: go test . -run '^$' -fuzz FuzzAsyncErrorModel -fuzztime 60s
+func FuzzAsyncErrorModel(f *testing.F) {
+	f.Add([]byte{0, 1, 3, 2, 0, 3})
+	f.Add([]byte{1, 1, 3})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		sig := signals.New[int]()
+		fail := map[string]bool{} // keys of registered failing listeners
+		ok := map[string]bool{}   // keys of registered succeeding listeners
+
+		joinedCount := func(err error) int {
+			if err == nil {
+				return 0
+			}
+			if u, isJoin := err.(interface{ Unwrap() []error }); isJoin {
+				return len(u.Unwrap())
+			}
+			return 1
+		}
+
+		for i, b := range data {
+			key := fmt.Sprintf("k%d", int(b)%6)
+			switch b % 4 {
+			case 0: // add a failing error-listener (if the key is free)
+				if !fail[key] && !ok[key] {
+					sig.AddListenerWithErr(func(context.Context, int) error { return errors.New("fail") }, key)
+					fail[key] = true
+				}
+			case 1: // add a succeeding error-listener (if the key is free)
+				if !fail[key] && !ok[key] {
+					sig.AddListenerWithErr(func(context.Context, int) error { return nil }, key)
+					ok[key] = true
+				}
+			case 2: // remove
+				sig.RemoveListener(key)
+				delete(fail, key)
+				delete(ok, key)
+			case 3: // emit and wait for errors — count must equal the live failing set
+				got := joinedCount(sig.EmitAndWaitErr(context.Background(), i))
+				if got != len(fail) {
+					t.Fatalf("op %d: EmitAndWaitErr returned %d errors; want %d (live failing listeners)", i, got, len(fail))
+				}
+			}
+		}
 	})
 }

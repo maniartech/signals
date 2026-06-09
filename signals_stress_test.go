@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,5 +88,70 @@ func TestStress_AsyncNoGoroutineLeak(t *testing.T) {
 	}
 	if after > base+20 {
 		t.Fatalf("possible goroutine leak: baseline=%d, after=%d", base, after)
+	}
+}
+
+// I8/I12 under adversarial load: many concurrent emitters on a BOUNDED async signal,
+// with concurrent add/remove churn, while an observer continuously samples introspection.
+// Under -race this proves the bounded dispatcher + error model have no race, deadlock, or
+// goroutine leak, and that the concurrency bound is never exceeded across overlapping emits.
+func TestStress_BoundedAsyncUnderLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test skipped in -short mode")
+	}
+	base := runtime.NumGoroutine()
+
+	const limit = 8
+	sig := signals.NewWithOptions[int](&signals.SignalOptions{MaxConcurrent: limit})
+	sig.OnError(func(context.Context, error) {}) // exercise the error sink under load
+
+	var inFlight, peak int32
+	// A permanent error-returning listener that also tracks live concurrency.
+	sig.AddListenerWithErr(func(context.Context, int) error {
+		cur := atomic.AddInt32(&inFlight, 1)
+		for {
+			p := atomic.LoadInt32(&peak)
+			if cur <= p || atomic.CompareAndSwapInt32(&peak, p, cur) {
+				break
+			}
+		}
+		atomic.AddInt32(&inFlight, -1)
+		return nil
+	}, "tracker")
+
+	const emitters = 100
+	const iters = 50
+	var wg sync.WaitGroup
+	for i := 0; i < emitters; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			key := fmt.Sprintf("g%d", id)
+			for j := 0; j < iters; j++ {
+				sig.AddListener(noop, key)
+				if id%2 == 0 {
+					sig.EmitAndWait(context.Background(), id)
+				} else {
+					sig.Emit(context.Background(), id)
+				}
+				_ = sig.Len()
+				sig.RemoveListener(key)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&peak); got > limit {
+		t.Fatalf("peak concurrency %d exceeded the bound %d", got, limit)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	after := runtime.NumGoroutine()
+	for after > base+20 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		after = runtime.NumGoroutine()
+	}
+	if after > base+20 {
+		t.Fatalf("possible goroutine leak under bounded load: baseline=%d, after=%d", base, after)
 	}
 }

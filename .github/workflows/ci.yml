@@ -81,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [FuzzSyncOps_Model, FuzzConcurrentOps_Race]
+        target: [FuzzSyncOps_Model, FuzzConcurrentOps_Race, FuzzAsyncErrorModel]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
