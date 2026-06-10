@@ -309,9 +309,9 @@ func (ea *EventAggregator) ReplayEvents(fromTime time.Time, eventTypes []string)
 5. **Replay Capability**: Enable event replay for debugging and recovery scenarios
 
 #### Performance Considerations
-- **Memory Usage**: ~50KB for 1000 events with full metadata
-- **Latency**: <100μs aggregation overhead per event
-- **Throughput**: Handles 100K+ events/second with proper buffering
+- **Memory Usage**: Enrichment and metadata add per-event overhead; keep the metadata payload small for high-volume streams
+- **Latency**: Aggregation and filtering run inline, so heavy per-event work should move to async listeners or downstream workers
+- **Throughput**: Buffer high-volume sources so producers are not blocked by slow consumers
 
 ---
 
@@ -2082,7 +2082,7 @@ type ModerationEvent struct {
 **Why AsyncSignal for User Actions?**
 - **Volume**: 50K+ actions per minute require non-blocking processing
 - **Tolerance**: Analytics can handle eventual consistency and occasional losses
-- **Performance**: 11ns/op latency keeps the main request path fast
+- **Performance**: Fire-and-forget dispatch returns quickly (~260 ns to spawn one listener goroutine), keeping the main request path off the critical work
 - **Scalability**: Each listener runs in separate goroutines, utilizing all CPU cores
 
 **Why SyncSignal for Content Moderation?**
@@ -2202,7 +2202,7 @@ func ApproveContentForPublication(ctx context.Context, contentID string, content
 }
 ```
 
-**🎖️ Result**: Platform successfully handles 100K+ requests/minute with 99.9% uptime and <100ms content approval latency.
+**🎖️ Result**: The async/sync split keeps analytics off the request path while content moderation runs as an ordered, fail-closed sequential pipeline.
 
 ---
 
@@ -2217,7 +2217,7 @@ func ApproveContentForPublication(ctx context.Context, contentID string, content
 package events
 
 // Ultra-high frequency market data (async for speed)
-var MarketData = signals.New[MarketTickEvent]()          // 🚀 1M+ events/sec
+var MarketData = signals.New[MarketTickEvent]()          // async fan-out for high-volume ticks
 
 // Transaction-critical order processing (sync for safety)
 var OrderValidation = signals.NewSync[OrderValidationEvent]() // 🛡️ Must validate before execution
@@ -2259,7 +2259,7 @@ type RiskEvent struct {
 package marketdata
 
 func init() {
-    // Optimize for extreme throughput (1M+ ticks per second)
+    // Pre-size the listener set for the known set of market-data consumers
     opts := &signals.SignalOptions{
         InitialCapacity: 25,  // Known set of market data consumers
         GrowthFunc: func(cap int) int {
@@ -2269,11 +2269,11 @@ func init() {
     events.MarketData = signals.NewWithOptions[events.MarketTickEvent](opts)
 
     // Ultra-fast processing listeners
-    events.MarketData.AddListener(updateOrderBook, "orderbook")           // 🚀 <1μs
-    events.MarketData.AddListener(calculateIndicators, "indicators")       // 🚀 <5μs
-    events.MarketData.AddListener(triggerAlgorithms, "algorithms")        // 🚀 <10μs
-    events.MarketData.AddListener(updatePriceFeeds, "price-feeds")        // 🚀 <2μs
-    events.MarketData.AddListener(recordMarketHistory, "history")         // 🚀 <100μs
+    events.MarketData.AddListener(updateOrderBook, "orderbook")           // order book update
+    events.MarketData.AddListener(calculateIndicators, "indicators")       // technical indicators
+    events.MarketData.AddListener(triggerAlgorithms, "algorithms")        // algo triggers
+    events.MarketData.AddListener(updatePriceFeeds, "price-feeds")        // price feed fan-out
+    events.MarketData.AddListener(recordMarketHistory, "history")         // history recording
 }
 
 // Reasoning: Market data processing must be non-blocking and extremely fast
@@ -2282,11 +2282,11 @@ func ProcessMarketTick(tick events.MarketTickEvent) {
     // Context reuse for maximum performance
     ctx := context.Background()
 
-    // Non-blocking emit - returns in ~11ns for single listener optimization
+    // Fire-and-forget emit - dispatch returns without waiting for listeners
+    // (dispatch spawns one goroutine per listener; ~260 ns for a single listener)
     events.MarketData.Emit(ctx, tick)
 
     // Market data processing happens concurrently in separate goroutines
-    // Each listener optimized for sub-millisecond processing
 }
 
 func updateOrderBook(ctx context.Context, tick events.MarketTickEvent) {
@@ -2428,7 +2428,7 @@ func validateAccountBalance(ctx context.Context, risk events.RiskEvent) error {
 }
 ```
 
-**🎖️ Result**: Trading platform processes 50K+ orders per second with 99.99% uptime and <200ms order-to-execution latency while maintaining strict regulatory compliance.
+**🎖️ Result**: Market data fans out asynchronously while order validation, risk assessment, and execution run as synchronous, atomic, fail-closed steps that maintain a complete audit trail.
 
 ---
 
@@ -2694,7 +2694,7 @@ func processOptimizationSignals(ctx context.Context, signal events.OptimizationE
 
 | **Pattern** | **Use Case** | **Key Benefit** | **Performance Impact** |
 |-------------|--------------|-----------------|----------------------|
-| **Async High-Volume** | User actions, Market data, Stock updates | Non-blocking processing | 11ns/op, unlimited throughput |
+| **Async High-Volume** | User actions, Market data, Stock updates | Non-blocking processing | Fire-and-forget dispatch (~260 ns/listener to spawn); listeners run concurrently |
 | **Sync Critical Path** | Order validation, Risk assessment, Inventory reservation | Atomic operations, Error propagation | 500μs-10ms (acceptable for critical operations) |
 | **Mixed Architecture** | Complete workflows | Best of both worlds | Optimized per operation type |
 | **Dynamic Listeners** | Feature flags, A/B testing | Runtime adaptability | Minimal overhead with keyed listeners |
@@ -2703,11 +2703,11 @@ func processOptimizationSignals(ctx context.Context, signal events.OptimizationE
 
 ### **📈 Performance Insights**
 
-- **Async Signals**: Handle 1M+ events/second with proper pre-allocation
-- **Sync Signals**: Process critical workflows in <10ms with comprehensive validation
-- **Memory Usage**: <1KB heap usage for 100+ listeners with zero-allocation optimizations
-- **Error Handling**: 99.9% error categorization accuracy enables targeted responses
-- **Context Management**: Proper timeout handling prevents 95% of cascade failures
+- **Async Signals**: Fire-and-forget dispatch spawns one goroutine per listener (~260 ns for a single listener; ~28 µs to dispatch to 100 listeners). Pre-sizing the listener set avoids reallocation on registration.
+- **Sync Signals**: Run listeners sequentially in the caller's goroutine on a lock-free read path — ~9 ns / zero allocations for a single listener, ~39 ns for ten.
+- **Memory Usage**: The sync read path is allocation-free. Async dispatch allocates per emit (e.g. ~208 B / 2 allocs for one listener, ~11 KB for 100 listeners) since it spawns goroutines.
+- **Error Handling**: `TryEmit` aggregates listener failures via `errors.Join`, and `OnError` surfaces handler errors, giving callers a single error value to branch on.
+- **Context Management**: `TryEmit` honors context cancellation so callers can fail fast instead of blocking on slow listeners.
 
 **These real-world applications demonstrate how signals enable robust, high-performance in-process communication within monolithic Go applications while maintaining the flexibility and safety required for production systems.** 🚀
 

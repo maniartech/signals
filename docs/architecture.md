@@ -1,747 +1,562 @@
-# Architecture & Performance Engineering
+# Architecture & Performance
 
-> **Zero-allocation, military-grade event processing architecture**
+A deep dive into the real v1.4 design of `github.com/maniartech/signals`: a
+lock-free, copy-on-write listener registry with a synchronous (sequential) and an
+asynchronous (goroutine-per-listener) emission strategy on top of it.
 
-Deep dive into the engineering excellence that powers **11ns/op** performance with **0 allocations** in critical paths.
+This document describes what the code actually does. Where it claims a performance
+number, that number comes from the repository's benchmark suite under the stated
+conditions (see [Benchmarks](#benchmarks)). There are no hidden worker pools,
+`sync.Pool`s, task queues, or `RWMutex`es in this library — earlier revisions of
+this page described an architecture that was never built.
 
-## Performance Metrics at a Glance
+## What the design is (in one paragraph)
 
-| **Metric** | **SyncSignal** | **AsyncSignal** | **Memory** |
-|------------|----------------|-----------------|-------------|
-| **Single Listener** | `11 ns/op` | `29 ns/op` | `0 allocs/op` |
-| **100 Listeners** | `1,100 ns/op` | `2,900 ns/op` | `43 bytes total` |
-| **1000 Concurrent** | `99.9% < 1ms` | `99.9% < 2ms` | `< 1KB heap` |
-| **Coverage** | **93.5%** | **93.5%** | **2000+ tests** |
+Listeners are stored as an **immutable slice** behind an `atomic.Pointer`. Every
+emit is a **single atomic load** of that slice followed by a direct iteration —
+**no lock, no per-emit copy, no allocation on the read path**. Writes
+(`AddListener`/`RemoveListener`/`Reset`) serialize on a `sync.Mutex`, build a
+**brand-new** slice (copy-on-write), and atomically swap it in. Because a published
+slice is never mutated again, a reader iterating an old slice is completely
+unaffected by a concurrent writer. `SyncSignal` runs listeners sequentially in the
+caller's goroutine; `AsyncSignal` runs each listener in its own goroutine, with an
+optional counting semaphore (`MaxConcurrent`) to cap concurrency.
 
 ## Core Architecture Overview
 
 ```mermaid
 graph TB
-    subgraph "Public API Layer"
-        API["Signal[T] Interface"]
-        SYNC["SyncSignal[T]"]
-        ASYNC["AsyncSignal[T]"]
+    subgraph "Public API"
+        API["Signal[T] interface"]
+        SYNC["SyncSignal[T]<br/>sequential, caller goroutine"]
+        ASYNC["AsyncSignal[T]<br/>goroutine per listener"]
     end
 
-    subgraph "Core Engine"
-        BASE["baseSignal[T]<br/>🔒 Private Implementation"]
-        POOL["sync.Pool<br/>⚡ Zero-Allocation Optimization"]
-        MUTEX["RWMutex<br/>🛡️ Concurrency Safety"]
+    subgraph "Shared core: BaseSignal[T]"
+        PTR["atomic.Pointer[[]keyedListener[T]]<br/>immutable, lock-free reads"]
+        WMU["writeMu sync.Mutex<br/>serializes writers (copy-on-write)"]
+        SMAP["subscribersMap map[string]struct{}<br/>O(1) duplicate-key detection (under writeMu)"]
+        ONERR["onErr atomic.Pointer[[]sink]<br/>OnError sinks (copy-on-write)"]
     end
 
-    subgraph "Memory Management"
-        LISTENERS["[]Listener<br/>🧠 Prime Growth Strategy"]
-        KEYS["[]string<br/>🗝️ Optional Key Management"]
-        TASKS["[]task<br/>📋 Async Task Queue"]
-    end
-
-    subgraph "Worker Pool System"
-        WP1["Worker Pool 1<br/>⚙️ Goroutine Management"]
-        WP2["Worker Pool 2<br/>⚙️ Load Balancing"]
-        WPN["Worker Pool N<br/>⚙️ Auto-scaling"]
+    subgraph "Async-only (optional)"
+        SEM["slots chan struct{}<br/>MaxConcurrent semaphore (safety valve)"]
     end
 
     API --> SYNC
     API --> ASYNC
-    SYNC --> BASE
-    ASYNC --> BASE
-    BASE --> POOL
-    BASE --> MUTEX
-    BASE --> LISTENERS
-    BASE --> KEYS
-    ASYNC --> TASKS
-    ASYNC --> WP1
-    ASYNC --> WP2
-    ASYNC --> WPN
+    SYNC --> PTR
+    ASYNC --> PTR
+    PTR --> WMU
+    PTR --> SMAP
+    PTR --> ONERR
+    ASYNC -.optional.-> SEM
 
-    style BASE fill:#ff6b6b,color:#fff
-    style POOL fill:#4ecdc4,color:#fff
-    style MUTEX fill:#45b7d1,color:#fff
+    style PTR fill:#4ecdc4,color:#fff
+    style WMU fill:#45b7d1,color:#fff
     style API fill:#96ceb4,color:#fff
+    style SEM fill:#f6c453,color:#000
 ```
 
-## The Heart of the Engine: Advanced Signaling Architecture
+There is deliberately **no** `sync.Pool`, **no** worker pool, **no** `RWMutex`, and
+**no** async task queue. The only synchronization primitives are the `atomic.Pointer`
+that publishes the listener slice, the `writeMu` that serializes writers, and the
+optional `slots` semaphore on async signals.
 
-The real power lies in the sophisticated **signaling mechanisms**, **zero-allocation architecture**, and **military-grade engineering practices** that deliver unprecedented performance:
+## The core: lock-free reads, locked writes (copy-on-write)
 
-### Core Innovation Pillars
-
-1. **▷ Zero-Allocation Critical Path** - Sub-11ns processing with 0 heap allocations
-2. **◆ Thread-Safe Concurrency** - RWMutex optimization for massive parallelism
-3. **▪ Connection Pooling** - Object reuse eliminating GC pressure
-4. **▨ Goroutine Management** - Smart worker pools preventing resource exhaustion
-5. **● Bulletproof Error Handling** - Panic recovery with context propagation
-6. **▤ Scalable Architecture** - Handling hundreds of signals simultaneously
-
-### Prime-Based Growth Algorithm: Memory Engineering Excellence
-Advanced memory allocation strategy using prime numbers for **optimal CPU cache utilization** and **hash collision reduction**:
+`BaseSignal[T]` is the shared implementation embedded (by composition) in both
+`SyncSignal[T]` and `AsyncSignal[T]`. Its listener registry is the heart of the
+library.
 
 ```go
-// ▷ Mathematically optimized prime sequence for memory efficiency
-var primes = []int{
-    7, 17, 37, 79, 163, 331, 673, 1361, 2729, 5471, 10949, 21911, 43853, 87719
+type BaseSignal[T any] struct {
+    // writeMu serializes writers (AddListener/RemoveListener/Reset).
+    // Readers NEVER take this lock.
+    writeMu sync.Mutex
+
+    // subs holds the current immutable subscriber slice. Readers load it
+    // atomically and iterate without copying; writers swap in a fresh slice.
+    subs atomic.Pointer[[]keyedListener[T]]
+
+    // subscribersMap gives O(1) duplicate-key detection.
+    // Only touched while holding writeMu, so it needs no separate locking.
+    subscribersMap map[string]struct{}
+
+    // growthFunc decides capacity when the slice must grow (prime sequence).
+    growthFunc func(currentCap int) int
+
+    // onErr holds OnError sinks, also published copy-on-write behind an
+    // atomic pointer so error routing is lock-free.
+    onErr   atomic.Pointer[[]func(context.Context, error)]
+    onErrMu sync.Mutex
 }
+```
 
-    // ▶ Strategic prime selection prevents memory fragmentation
-func growListeners[T any](current []func(context.Context, T)) []func(context.Context, T) {
-    currentCap := cap(current)
-    newSize := currentCap * 2
+A `keyedListener[T]` pairs a listener with an optional key. It can hold either a
+plain listener or an error-returning listener (used by `TryEmit` and `OnError`).
 
-    for _, prime := range primes {
-        if prime > currentCap {
-            newSize = prime
-            break
-        }
+### The read path (every Emit / TryEmit / dispatch)
+
+Reading the listener set is a single atomic load. The slice it returns is immutable,
+so it can be iterated directly with no lock and no defensive copy:
+
+```go
+// load() is the read primitive for every emit path.
+func (s *BaseSignal[T]) load() []keyedListener[T] {
+    if p := s.subs.Load(); p != nil {
+        return *p
     }
-
-    // ⚡ Zero-copy slice growth with optimal alignment
-    newListeners := make([]func(context.Context, T), len(current), newSize)
-    copy(newListeners, current)
-    return newListeners
-}
-```
-
-**Why This Engineering Approach is Revolutionary:**
-- ✅ **Better Hash Distribution**: Reduces clustering in internal data structures
-- ✅ **Memory Alignment**: Optimal CPU cache line utilization
-- ✅ **Growth Efficiency**: Minimizes reallocation frequency
-- ✅ **Performance Stability**: Predictable memory access patterns
-
-## Advanced Error Handling & Goroutine Management
-
-### Sophisticated Panic Recovery System
-**Military-grade resilience** ensuring one failing listener never crashes the entire system:
-
-```go
-func (s *AsyncSignal[T]) safeExecute(ctx context.Context, data T, listener func(context.Context, T)) {
-    defer func() {
-        if r := recover(); r != nil {
-            // 🛡️ Bulletproof panic isolation
-            stack := debug.Stack()
-
-            // 📊 Structured error reporting
-            errorEvent := PanicEvent{
-                ListenerName: getFunctionName(listener),
-                PanicValue:   r,
-                StackTrace:   stack,
-                EventData:    data,
-                Timestamp:    time.Now(),
-                GoroutineID:  getGoroutineID(),
-            }
-
-            // 🔔 Non-blocking error notification
-            select {
-            case s.errorChannel <- errorEvent:
-            default: // Never block on error reporting
-            }
-        }
-    }()
-
-    // ▷ Execute listener in protected context
-    listener(ctx, data)
-}
-```
-
-### Advanced Connection Pooling & Goroutine Management
-**Smart resource management** preventing goroutine explosion:
-
-```go
-type AsyncSignal[T any] struct {
-    baseSignal[T]
-
-    // 🏊‍♂️ Sophisticated pooling architecture
-    taskPool      *sync.Pool              // ♻️ Zero-alloc task reuse
-    workerLimit   chan struct{}           // 🚧 Goroutine rate limiting
-    activeWorkers int64                   // 📊 Real-time worker tracking
-    maxWorkers    int32                   // ⚡ Dynamic scaling limits
-}
-
-func (s *AsyncSignal[T]) EmitWithBackpressure(ctx context.Context, data T) error {
-    // ▷ Intelligent backpressure handling
-    select {
-    case s.workerLimit <- struct{}{}:
-        // 🟢 Resource available - proceed
-        defer func() { <-s.workerLimit }()
-
-        atomic.AddInt64(&s.activeWorkers, 1)
-        defer atomic.AddInt64(&s.activeWorkers, -1)
-
-        s.Emit(ctx, data)
-        return nil
-
-    case <-ctx.Done():
-        // 🛑 Respect context cancellation
-        return ctx.Err()
-
-    default:
-        // 🚨 System overloaded - intelligent fallback
-        return ErrBackpressureExceeded
-    }
-}
-```
-
-### Real-Time Performance Monitoring
-**Built-in observability** for production systems:
-
-```go
-type SignalMetrics struct {
-    EmitsPerSecond    uint64    // 📈 Throughput monitoring
-    ActiveListeners   int32     // 👥 Current listener count
-    ErrorRate         float64   // 🚨 Failure rate tracking
-    P99Latency        duration  // ⚡ 99th percentile response time
-    GoroutineCount    int32     // 🏃‍♂️ Active worker tracking
-    MemoryUsage       uint64    // 💾 Real-time memory consumption
-}
-
-func (s *AsyncSignal[T]) GetMetrics() SignalMetrics {
-    return SignalMetrics{
-        EmitsPerSecond:  atomic.LoadUint64(&s.emitCounter),
-        ActiveListeners: atomic.LoadInt32(&s.listenerCount),
-        ErrorRate:       s.calculateErrorRate(),
-        P99Latency:      s.latencyHistogram.Quantile(0.99),
-        GoroutineCount:  atomic.LoadInt32(&s.activeWorkers),
-        MemoryUsage:     s.getMemoryUsage(),
-    }
-}
-```
-
-**🏆 This is what makes Signals the most advanced event system in Go:**
-- 🛡️ **Bulletproof Resilience**: Panic isolation with zero impact
-- ▶ **Smart Resource Management**: Prevents goroutine/memory leaks
-- 📊 **Production-Ready Observability**: Real-time performance insights
-- ⚡ **Intelligent Backpressure**: Graceful degradation under load
-- 🔒 **Thread-Safe Excellence**: Lock-free where possible, optimized where necessary
-
-### Zero-Allocation Fast Path: The Engineering Masterpiece
-The **crown jewel** of performance engineering - **11ns critical path with 0 heap allocations**:
-
-```go
-// ▶ Core emission algorithm - zero heap allocations
-func emitToListeners[T any](ctx context.Context, data T, mu *sync.RWMutex, listeners []func(context.Context, T)) {
-    mu.RLock()                      // 🔓 Optimized read lock (microsecond speed)
-    listenersCopy := listeners      // ▶ Zero-alloc slice header copy
-    mu.RUnlock()                    // 🔒 Immediate release
-
-    // 💨 CRITICAL PATH: Pure stack-based execution
-    for i := 0; i < len(listenersCopy); i++ {
-        listenersCopy[i](ctx, data) // ▷ Direct function call (no indirection)
-    }
-}
-```
-
-### World-Class Zero-Allocation Engineering
-1. **🧠 Slice Header Semantics**: Copy 24-byte header, not underlying data
-2. **📊 Index-Loop Optimization**: Eliminates `range` iterator allocations
-3. **▷ Register-Optimized Variables**: Hot data stays in CPU registers
-4. **⚡ Pointer Elimination**: Direct value semantics prevent heap escapes
-5. **🔥 Escape Analysis Mastery**: Compiler-proven stack allocation
-6. **📈 Memory Barrier Efficiency**: Minimal synchronization overhead
-
-## SyncSignal: Transaction-Safe Processing
-
-Perfect for critical workflows requiring error propagation and sequential execution:
-
-```go
-type SyncSignal[T any] struct {
-    listeners []func(context.Context, T)        // 🎯 Listener functions
-    keys      []string                          // 🗝️ Optional key tracking
-    mu        sync.RWMutex                     // 🛡️ Thread-safe access
-}
-
-func (s *SyncSignal[T]) TryEmit(ctx context.Context, data T) error {
-    s.mu.RLock()
-    listeners := s.listeners
-    s.mu.RUnlock()
-
-    // Sequential execution with error checking
-    for i, listener := range listeners {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()                   // 🛑 Respect context cancellation
-        default:
-        }
-
-        // Call listener and check for errors
-        if errorListener, ok := listener.(func(context.Context, T) error); ok {
-            if err := errorListener(ctx, data); err != nil {
-                return fmt.Errorf("listener %d failed: %w", i, err)
-            }
-        } else {
-            listener(ctx, data)                // 🚀 Regular listener (no error)
-        }
-    }
-
     return nil
 }
 ```
 
-**SyncSignal Architecture Benefits:**
-- ✅ **Error Propagation**: Stop-on-first-error semantics
-- ✅ **Context Respect**: Proper cancellation handling
-- ✅ **Sequential Execution**: Predictable ordering
-- ✅ **Transaction Safety**: All-or-nothing processing
+Why this is safe without a lock:
 
-## AsyncSignal: Concurrent Processing Engine
+- A published slice is **never mutated** after it is stored. Writers always build a
+  new backing array, so a reader iterating an older slice cannot observe a torn or
+  partially-updated state.
+- The `atomic.Pointer` load/store pair establishes the **happens-before**
+  relationship: whatever a writer did before `subs.Store(&newSlice)` is visible to a
+  reader that observes that store via `subs.Load()`.
+- Readers never block writers, and readers never block each other. Concurrent emits
+  scale nearly linearly with cores.
 
-Optimized for high-throughput, non-blocking event processing:
+This is the reason the synchronous read path is **0 allocations** and runs in
+single-digit nanoseconds (see [Benchmarks](#benchmarks)).
+
+### The write path (Add / Remove / Reset) — copy-on-write, O(n)
+
+Writers take `writeMu`, build a fresh slice, and atomically swap it in. Writes are
+O(n) by design — copy-on-write trades write cost for lock-free reads, which is the
+right trade for an event library where emits vastly outnumber subscription changes.
 
 ```go
-type AsyncSignal[T any] struct {
-    listeners []func(context.Context, T)        // 🎯 Listener functions
-    keys      []string                          // 🗝️ Optional key tracking
-    mu        sync.RWMutex                     // 🛡️ Thread-safe access
-    pool      *sync.Pool                       // ⚡ Task object reuse
-    workers   int                              // 👷 Worker pool size
+// add appends a listener using copy-on-write under the write mutex.
+func (s *BaseSignal[T]) add(kl keyedListener[T]) int {
+    s.writeMu.Lock()
+    defer s.writeMu.Unlock()
+
+    if kl.keyed { // duplicate-key detection is O(1) via the map
+        if _, ok := s.subscribersMap[kl.key]; ok {
+            return -1 // duplicate key: nothing added
+        }
+    }
+
+    old := s.load()
+    dup := s.cloneForWrite(old, 1) // fresh backing array, honoring growthFunc
+    dup = append(dup, kl)
+    if kl.keyed {
+        s.subscribersMap[kl.key] = struct{}{}
+    }
+    s.subs.Store(&dup) // atomic publish — readers see the new slice or the old, never a mix
+    return len(dup)
 }
+```
 
-func (s *AsyncSignal[T]) Emit(ctx context.Context, data T) {
-    s.mu.RLock()
-    listeners := s.listeners
-    s.mu.RUnlock()
+`RemoveListener` uses a **swap-remove** inside the freshly copied slice: it moves the
+last element into the removed slot and truncates. That makes removal O(1) within the
+new slice but **reorders** the remaining listeners (registration order is not
+preserved after a removal). The duplicate-key map is updated under the same lock.
 
-    // Launch each listener in separate goroutine
-    for _, listener := range listeners {
-        task := s.pool.Get().(*task[T])        // ♻️ Reuse task objects
-        task.ctx = ctx
-        task.data = data
-        task.listener = listener
+`Reset` simply publishes a new empty slice and a new empty map.
 
-        go s.executeTask(task)                 // 🏃‍♂️ Non-blocking execution
+The returned `int` from every `Add*` call is a **count of subscribers** (or `-1` on a
+duplicate key) — **not a position**. There is no remove-by-index; removal is by key
+only. Register a listener with a key to remove it later; unkeyed listeners can only be
+cleared via `Reset`.
+
+### Concurrency contract
+
+- **Happens-before** is established solely by atomic-pointer publication of the
+  listener slice (and, separately, the `OnError` sink slice).
+- Readers never block writers or one another.
+- The library synchronizes **only the listener set**. It makes **no** guarantees
+  about the payload you pass or about state your listeners capture and mutate — that
+  is the caller's responsibility. If two async listeners touch shared state, you must
+  synchronize that state yourself.
+
+## Prime-based growth
+
+When the subscriber slice must grow, capacity follows a **prime-number sequence**.
+Prime sizing helps reduce clustering in hash-based structures and tends to spread
+reallocation points out. Both the initial capacity and the growth function are
+configurable via `SignalOptions`.
+
+```go
+// Default starting capacity (a prime).
+var defaultInitialCapacity = 11
+
+// Default growth sequence (truncated here; the real slice runs to ~2.1 billion).
+var defaultPrimes = []int{11, 17, 23, 31, 47, 67, 97, 127, 197, 257, /* ... */ 2147483647}
+
+// defaultGrowthFunc returns the next prime larger than the current capacity,
+// falling back to doubling-plus-one past the end of the table.
+func defaultGrowthFunc(currentCap int) int {
+    for _, p := range defaultPrimes {
+        if p > currentCap {
+            return p
+        }
+    }
+    return currentCap*2 + 1
+}
+```
+
+Customize it through `SignalOptions`:
+
+```go
+sig := signals.NewWithOptions[Order](&signals.SignalOptions{
+    InitialCapacity: 64,                               // pre-size for a known listener count
+    GrowthFunc:      func(c int) int { return c * 2 }, // your own growth policy
+})
+```
+
+`InitialCapacity` defaults to 11; a non-positive value falls back to the default. A
+`nil` `GrowthFunc` uses the prime sequence above. These options apply to both sync
+and async signals (`NewWithOptions` / `NewSyncWithOptions`).
+
+## SyncSignal: sequential, in the caller's goroutine
+
+`SyncSignal[T]` invokes listeners **one at a time, in order, on the calling
+goroutine**. `Emit` blocks until every listener has run. It is the right choice when
+you need ordering, completion-before-return, or no goroutine overhead.
+
+`Emit` is **best-effort**: if an error-returning listener (added with
+`AddListenerWithErr`) returns an error, that error is routed to the `OnError` sinks
+and the chain **continues**.
+
+```go
+func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
+    s.ensureBase()
+    if ctx != nil && ctx.Err() != nil {
+        return // already canceled
+    }
+    // Lock-free read: a single atomic load of the immutable slice. No copy.
+    subscribers := s.baseSignal.load()
+    for i := range subscribers {
+        if ctx != nil && ctx.Err() != nil {
+            break // stop invoking further listeners on cancellation
+        }
+        sub := &subscribers[i]
+        if sub.listenerErr != nil {
+            if err := sub.listenerErr(ctx, payload); err != nil {
+                s.baseSignal.routeError(ctx, err) // best-effort: route, then continue
+            }
+            continue
+        }
+        if sub.listener != nil {
+            sub.listener(ctx, payload)
+        }
     }
 }
-
-func (s *AsyncSignal[T]) executeTask(task *task[T]) {
-    defer func() {
-        task.reset()                           // 🧹 Clean task for reuse
-        s.pool.Put(task)                      // ♻️ Return to pool
-    }()
-
-    // Execute listener with panic recovery
-    func() {
-        defer func() {
-            if r := recover(); r != nil {
-                // Log panic but don't crash other listeners
-                log.Printf("Listener panic recovered: %v", r)
-            }
-        }()
-
-        task.listener(task.ctx, task.data)     // 🚀 Execute listener
-    }()
-}
 ```
 
-### Object Pool Optimization
-Massive performance boost through object reuse:
+`TryEmit` is **transactional**: it runs listeners in order and **stops at the first
+error or canceled context**, returning that error. Use it when later steps must not
+run if an earlier one fails.
 
 ```go
-type task[T any] struct {
-    ctx      context.Context
-    data     T
-    listener func(context.Context, T)
-}
+err := sig.TryEmit(ctx, payload) // nil iff every listener succeeded, else the first error
+```
 
-func (t *task[T]) reset() {
-    t.ctx = nil
-    t.data = *new(T)                          // Zero value
-    t.listener = nil
-}
+Note: panics from sync listeners are **not** recovered by the library — they
+propagate to the `Emit`/`TryEmit` caller, exactly like a normal function call. (Panic
+recovery applies to async listeners; see below.)
 
-// Pool factory for zero-allocation task creation
-var taskPool = sync.Pool{
-    New: func() interface{} {
-        return &task[any]{}                   // Pre-allocated task objects
-    },
+## AsyncSignal: a goroutine per listener (+ optional semaphore)
+
+`AsyncSignal[T]` runs each listener in its **own goroutine**, so listeners execute
+concurrently.
+
+### Emit is fire-and-forget
+
+`Emit` snapshots the listener slice at call time (a single atomic load), spawns **one
+dispatcher goroutine**, and **returns immediately**. The dispatcher starts each
+listener in its own goroutine.
+
+```go
+func (s *AsyncSignal[T]) Emit(ctx context.Context, payload T) {
+    s.ensureBase()
+    if ctx != nil && ctx.Err() != nil {
+        return // already canceled: don't even spawn a dispatcher
+    }
+    // Snapshot at CALL time so a later Add/Remove/Reset doesn't change
+    // what THIS emission delivers.
+    subscribers := s.baseSignal.load()
+    if len(subscribers) == 0 {
+        return
+    }
+    go s.dispatch(ctx, payload, subscribers, nil, nil) // returns immediately
 }
 ```
 
-**Pool Benefits:**
-- ✅ **95% Allocation Reduction**: Reuse vs recreate
-- ✅ **GC Pressure Relief**: Fewer objects to collect
-- ✅ **Memory Locality**: Hot objects stay in CPU cache
-- ✅ **Predictable Performance**: No allocation spikes
+The cost the caller observes from `Emit` is the **dispatch rate** — the time to
+snapshot and spawn — **not** the time for listeners to complete. Async emission
+allocates (goroutine stacks and closures); it is **not** a zero-allocation path. Do
+not attribute the sync path's single-digit-nanosecond, zero-allocation numbers to
+async emission.
 
-### Worker Pool Architecture
-Dynamic goroutine management for optimal resource utilization:
+### TryEmit waits for all and joins errors
+
+`TryEmit` runs all listeners concurrently, **waits for every one** (via a
+`sync.WaitGroup`), and returns the `errors.Join` of every failure **in registration
+order**. Unlike the sequential sync `TryEmit`, it cannot stop-on-first across
+goroutines — all listeners run.
+
+It is **context-aware**: if `ctx` is canceled or its deadline passes while listeners
+are still running, `TryEmit` returns `ctx.Err()` promptly instead of blocking on a
+slow listener. The guaranteed property is **caller liveness** — Go cannot force-cancel
+a running goroutine, so a detached listener may keep running in the background.
+
+```go
+// Wait for all async listeners, collect every error.
+if err := sig.TryEmit(ctx, payload); err != nil {
+    // err is errors.Join(...) of all failures, or ctx.Err() if the deadline hit
+}
+```
+
+### Optional bounding: the MaxConcurrent semaphore
+
+By default async dispatch is **unbounded** — one goroutine per listener. Setting
+`SignalOptions.MaxConcurrent > 0` installs a **counting semaphore** (`slots chan
+struct{}`) that caps how many handler goroutines run **at once**. Excess handlers
+**park** (nothing is dropped) until a slot frees.
+
+```go
+sig := signals.NewWithOptions[Job](&signals.SignalOptions{
+    MaxConcurrent: 8, // at most 8 handlers run concurrently; the rest wait their turn
+})
+```
+
+This is a **safety valve, not a worker pool and not a throughput optimization**:
+
+- It exists to protect a constrained downstream resource (e.g. a database connection
+  pool). Size it to the slowest dependency, never to the listener count.
+- The benchmark data shows bounding is **slower** than unbounded for short listeners
+  (the semaphore adds coordination overhead) — see [Benchmarks](#benchmarks).
+- A bound can **starve** long-running listeners (only `MaxConcurrent` ever start),
+  which is exactly why the default is unbounded.
+- `Emit` still returns immediately; the parking happens inside the background
+  dispatcher, not on the caller's goroutine.
+
+`signals.DefaultMaxConcurrent()` returns `2 × runtime.NumCPU()` as a reasonable
+**starting point** for I/O-bound listeners. It is **not applied automatically** — you
+must opt in by setting the field.
+
+### Panic isolation
+
+Each async handler goroutine recovers panics so that one misbehaving listener cannot
+crash the process or stop the others. Recovered panics are routed to a process-global
+handler installed via `signals.SetPanicHandler` (the default logs via the standard
+library `log` package). The semaphore slot is released on **every** exit path,
+including a recovered panic — so a panicking handler can never leak or deadlock a
+bounded signal's slots.
+
+```go
+signals.SetPanicHandler(func(recovered any) {
+    metrics.Inc("listener_panics")
+    log.Printf("listener panic: %v", recovered)
+})
+```
+
+### Async dispatch flow
 
 ```mermaid
 sequenceDiagram
-    participant E as Emitter
-    participant S as AsyncSignal
-    participant P as Object Pool
-    participant W1 as Worker 1
-    participant W2 as Worker 2
-    participant W3 as Worker N
+    participant C as Caller
+    participant A as AsyncSignal
+    participant D as Dispatcher goroutine
+    participant S as slots semaphore (optional)
+    participant H as Handler goroutines
 
-    E->>S: Emit(ctx, data)
-    S->>S: RLock listeners
+    C->>A: Emit(ctx, payload)
+    A->>A: atomic load of listener snapshot
+    A->>D: go dispatch(snapshot)
+    A-->>C: return immediately (fire-and-forget)
 
-    loop For each listener
-        S->>P: Get task object
-        P-->>S: Reused task
-        S->>S: task.setup(ctx, data, listener)
-
-        par Concurrent Execution
-            S->>W1: go executeTask(task1)
-            S->>W2: go executeTask(task2)
-            S->>W3: go executeTask(taskN)
-        end
+    loop for each listener in snapshot
+        D->>S: acquire slot (only if MaxConcurrent set; parks if full)
+        D->>H: go handler(ctx, payload)
     end
 
-    S-->>E: Return immediately
-
-    par Worker Execution
-        W1->>W1: Execute listener1
-        W2->>W2: Execute listener2
-        W3->>W3: Execute listenerN
-        W1->>P: Return task object
-        W2->>P: Return task object
-        W3->>P: Return task object
-    end
+    Note over H: each handler recovers panics → SetPanicHandler
+    H->>S: release slot on every exit path (incl. panic)
 ```
 
-## Concurrency & Thread Safety
+## Error handling model
 
-### RWMutex Optimization Strategy
-Read-optimized locking for high-frequency emit operations:
+Both signal types expose the same error surface — `AddListenerWithErr`, `OnError`,
+and `AddOnceWithErr` exist on **both** `SyncSignal` and `AsyncSignal`.
+
+| Path | Sync | Async |
+|------|------|-------|
+| `Emit` | best-effort; listener errors routed to `OnError` sinks, chain continues | fire-and-forget; listener errors routed to `OnError` sinks on a handler goroutine |
+| `TryEmit` | sequential; **stops at first error** and returns it | runs all, waits, returns `errors.Join` of all failures (or `ctx.Err()` on deadline) |
+
+`OnError` sinks are published copy-on-write behind their own atomic pointer, so
+routing an error is lock-free. A sink runs on the goroutine of the failing listener
+(the caller's for sync, a handler goroutine for async), so keep sinks cheap and
+non-blocking. A panic inside a sink is recovered and routed to the panic handler
+without stopping the remaining sinks.
 
 ```go
-// ✅ Optimized for 99% read operations - favors concurrent readers
-func emitWithOptimizedLocking[T any](ctx context.Context, data T, mu *sync.RWMutex, listeners []func(context.Context, T)) {
-    mu.RLock()        // 🔓 Multiple concurrent readers allowed
-    listenersCopy := listeners
-    mu.RUnlock()      // 🔒 Release quickly
-
-    // Execute without lock held (safe with slice copy)
-    for _, listener := range listenersCopy {
-        listener(ctx, data)
-    }
-}
-
-func addListenerWithLocking[T any](fn func(context.Context, T), mu *sync.RWMutex, listeners *[]func(context.Context, T)) {
-    mu.Lock()         // 🔒 Exclusive write access
-    *listeners = append(*listeners, fn)
-    mu.Unlock()       // 🔓 Release immediately
-}
+sig := signals.New[Payment]()
+sig.OnError(func(ctx context.Context, err error) {
+    log.Printf("payment listener failed: %v", err)
+})
+sig.AddListenerWithErr(func(ctx context.Context, p Payment) error {
+    return charge(ctx, p) // a non-nil error reaches the OnError sink on Emit
+})
+sig.Emit(ctx, payment) // fire-and-forget; errors surface via the sink
 ```
 
-**Concurrency Benefits:**
-- ✅ **Reader Parallelism**: Multiple emits can run concurrently
-- ✅ **Minimal Lock Contention**: Quick lock/unlock cycles
-- ✅ **Safe Iteration**: Slice copy prevents race conditions
-- ✅ **Write Protection**: Modifications are serialized
+## API surface (v1.4)
 
-### Memory Safety Guarantees
-Rock-solid guarantees in multi-threaded environments:
+Both `SyncSignal[T]` and `AsyncSignal[T]` satisfy the same `Signal[T]` interface
+(enforced by compile-time assertions in `new.go`):
 
 ```go
-// ✅ Memory barrier ensures visibility
-func safeAddListener[T any](fn func(context.Context, T), mu *sync.RWMutex, listeners *[]func(context.Context, T)) {
-    mu.Lock()
-
-    // Create new slice to avoid races with readers
-    current := *listeners
-    newListeners := make([]func(context.Context, T), len(current)+1)
-    copy(newListeners, current)
-    newListeners[len(current)] = fn
-
-    // Atomic replacement (memory barrier)
-    *listeners = newListeners
-
-    mu.Unlock()
-}
+Emit(ctx context.Context, payload T)
+TryEmit(ctx context.Context, payload T) error
+OnError(sink func(ctx context.Context, err error))
+AddListener(handler SignalListener[T], key ...string) int
+AddListenerWithErr(handler SignalListenerErr[T], key ...string) int
+AddOnce(handler SignalListener[T], key ...string) int
+AddOnceWithErr(handler SignalListenerErr[T], key ...string) int
+RemoveListener(key string) int
+Reset()
+Len() int
+IsEmpty() bool
+Keys() []string
+HasKey(key string) bool
 ```
 
-## Performance Engineering Deep Dive
+Constructors: `New[T]()` (async), `NewSync[T]()` (sync), and the options variants
+`NewWithOptions[T](opts)` / `NewSyncWithOptions[T](opts)`.
 
-### Benchmarking Results Analysis
+> Removed in v1.4: `EmitAndWait`, `EmitAndWaitErr`, and `AddOnceWithKey` no longer
+> exist. To wait for async completion, use `TryEmit` (and ignore the result if you
+> only need the wait). To add a keyed one-shot, pass the key to `AddOnce` /
+> `AddOnceWithErr`.
+
+## Benchmarks
+
+These are the only authoritative performance numbers. They were measured on an
+**AMD Ryzen 7 5700G, Windows**, with `go test -count=6`. Reproduce them yourself:
 
 ```bash
-$ go test -bench=BenchmarkSyncSignal -benchmem -count=5
-
-BenchmarkSyncSignalEmit/1_listener-8          100000000    11.2 ns/op    0 B/op    0 allocs/op
-BenchmarkSyncSignalEmit/10_listeners-8         10000000   112.1 ns/op    0 B/op    0 allocs/op
-BenchmarkSyncSignalEmit/100_listeners-8         1000000  1121.3 ns/op    0 B/op    0 allocs/op
-BenchmarkSyncSignalEmit/1000_listeners-8        100000  11213.7 ns/op    0 B/op    0 allocs/op
-
-BenchmarkAsyncSignalEmit/1_listener-8           50000000    29.4 ns/op   43 B/op    1 allocs/op
-BenchmarkAsyncSignalEmit/10_listeners-8          5000000   294.2 ns/op  430 B/op   10 allocs/op
-BenchmarkAsyncSignalEmit/100_listeners-8          500000  2942.1 ns/op 4300 B/op  100 allocs/op
+go test -run '^$' -bench=. -benchmem -count=6 ./tests/
 ```
 
-**Performance Analysis:**
-- 📈 **Linear Scaling**: O(n) performance with listener count
-- ⚡ **Sub-microsecond Latency**: 11ns for single listener
-- ▷ **Zero Heap Allocations**: Critical path completely stack-based
-- 🔥 **99.9th Percentile**: < 1ms even with 1000 listeners
+### Sync — the lock-free, zero-allocation read path
 
-### Memory Layout Optimization
+| Scenario | Time | Allocations |
+|----------|------|-------------|
+| `Emit`, 1 listener | ~9 ns/op | 0 B, 0 allocs |
+| `Emit`, 10 listeners | ~39 ns/op | 0 allocs |
+| `Emit`, concurrent (16 goroutines) | ~1.3 ns/op | 0 allocs (near-linear scaling) |
+| `TryEmit`, 1 listener | ~11 ns/op | 0 allocs |
+| `Emit`, error routed to `OnError` | ~20 ns/op | 0 allocs |
+
+The "sub-10 ns / zero-allocation" characterization applies **only** to this sync read
+path. It is not a blanket property of the library.
+
+### Async Emit — this is the *dispatch rate*, not listener completion
+
+`Emit` returns after spawning goroutines; these numbers measure that spawn, **not** how
+long listeners take to finish.
+
+| Scenario | Time | Memory / Allocations |
+|----------|------|----------------------|
+| `Emit`, 1 listener | ~260 ns/op | 208 B, 2 allocs |
+| `Emit`, 100 listeners | ~28 µs/op | ~11 KB, ~85 allocs |
+| `Emit`, concurrent | ~475 ns/op | ~207 B, 1–2 allocs |
+
+### Async TryEmit — waits for all listeners to finish
+
+| Scenario | Time | Memory / Allocations |
+|----------|------|----------------------|
+| `TryEmit`, 10 listeners (unbounded) | ~6.5 µs/op | 1.5 KB, 12 allocs |
+| `TryEmit`, 10 listeners, `MaxConcurrent=4` | ~9.2 µs/op | — |
+
+The bounded run is **slower** than the unbounded one. Bounding is a safety valve, not
+a speed-up.
+
+### Write path — copy-on-write is O(n)
+
+| Scenario | Time | Memory / Allocations |
+|----------|------|----------------------|
+| Add/Remove churn, ~1000 listeners, concurrent | ~30 µs/op | ~82 KB, 5 allocs |
+
+Writes copy the whole slice; this is the deliberate cost that buys lock-free reads.
+
+## Choosing a signal type
+
+| You need… | Use |
+|-----------|-----|
+| Ordered, in-line execution; completion before `Emit` returns | `NewSync` |
+| Transactional stop-on-first-error semantics | `NewSync` + `TryEmit` |
+| Non-blocking emission; listeners do I/O | `New` (async) |
+| To wait for all async listeners and collect every error | async + `TryEmit` |
+| To cap concurrency against a constrained resource | async + `SignalOptions.MaxConcurrent` |
+
+### Example: a small in-process event bus
 
 ```go
-// ✅ Cache-friendly data layout - optimized field ordering
-type OptimalSignalLayout[T any] struct {
-    listeners []func(context.Context, T)    // Hot data first - most accessed
-    keys      []string                      // Warm data second - moderately accessed
-    mu        sync.RWMutex                 // Cold data last - least accessed
-    // Total: ~64 bytes (fits in single CPU cache line)
-}
-```
-
-**Cache Optimization Benefits:**
-- ✅ **Single Cache Line**: Entire struct fits in 64 bytes
-- ✅ **Hot Data First**: Most accessed fields at low offsets
-- ✅ **Alignment**: Natural memory alignment for all fields
-- ✅ **False Sharing Avoidance**: Proper memory padding
-
-### CPU Profiling Insights
-
-```bash
-$ go tool pprof cpu.prof
-
-(pprof) top 10
-Showing nodes with >= 0.1s (10% of 1.2s total)
-      flat  flat%   sum%        cum   cum%
-     0.8s 66.67% 66.67%      0.8s 66.67%  listener_function
-     0.2s 16.67% 83.33%      0.2s 16.67%  signal.emit
-     0.1s  8.33% 91.67%      0.1s  8.33%  sync.(*RWMutex).RLock
-     0.1s  8.33%   100%      0.1s  8.33%  sync.(*RWMutex).RUnlock
-```
-
-**Profiling Insights:**
-- ▷ **66% Time in Listeners**: Actual business logic (optimal!)
-- ⚡ **16% Time in Signal**: Core emit functionality
-- 🔒 **17% Time in Locking**: RWMutex overhead (minimal)
-- ✅ **Zero GC Time**: No garbage collection pressure
-
-## Production Architecture Patterns
-
-### **Monolithic Application Event Bus**
-```go
-type ApplicationEventBus struct {
-    // Domain events within same process
-    userEvents     signals.Signal[UserEvent]
-    orderEvents    signals.Signal[OrderEvent]
-    paymentEvents  signals.SyncSignal[PaymentEvent]  // Critical path
-
-    // System events within application
-    healthChecks   signals.Signal[HealthEvent]
-    metrics        signals.Signal[MetricEvent]
-
-    // Cross-cutting concerns within same binary
-    auditLog       signals.Signal[AuditEvent]
-    errorHandler   signals.Signal[ErrorEvent]
-
-    // Circuit breaker for external API calls
-    circuitBreaker *CircuitBreakerSignal
+type EventBus struct {
+    orders   signals.Signal[OrderEvent]   // async: fan out to independent handlers
+    payments signals.Signal[PaymentEvent] // sync: ordered, transactional
 }
 
-func (eb *ApplicationEventBus) Setup() {
-    // Wire up cross-package communication within same process
-    eb.orderEvents.AddListener(eb.handleOrderForInventory)  // inventory package
-    eb.orderEvents.AddListener(eb.handleOrderForShipping)   // shipping package
-    eb.orderEvents.AddListener(eb.handleOrderForAnalytics)  // analytics package
-
-    // Critical payment processing (sync)
-    eb.paymentEvents.AddListenerWithErr(eb.validatePayment)
-    eb.paymentEvents.AddListenerWithErr(eb.processPayment)
-    eb.paymentEvents.AddListenerWithErr(eb.recordTransaction)
-
-    // Health monitoring
-    eb.healthChecks.AddListener(eb.updateServiceRegistry)
-    eb.healthChecks.AddListener(eb.alertOnFailure)
-}
-```
-
-### **High-Frequency Trading System**
-```go
-type TradingEngine struct {
-    // Market data (ultra-high frequency)
-    marketData    signals.Signal[MarketTick]      // 1M+ events/sec
-
-    // Order processing (latency critical)
-    orderFlow     signals.SyncSignal[Order]      // Sub-millisecond SLA
-
-    // Risk management (must be synchronous)
-    riskCheck     signals.SyncSignal[RiskEvent]  // Cannot fail
-
-    // Reporting (can be async)
-    reporting     signals.Signal[ReportEvent]    // Background processing
-}
-
-func (te *TradingEngine) ProcessMarketData(tick MarketTick) {
-    // Ultra-low latency path
-    te.marketData.Emit(context.Background(), tick)
-    // Returns in ~11ns - market data keeps flowing
-}
-
-func (te *TradingEngine) PlaceOrder(order Order) error {
-    // Synchronous validation chain
-    ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-    defer cancel()
-
-    return te.orderFlow.TryEmit(ctx, order) // Must complete all steps
-}
-```
-
-### **Event Sourcing Implementation**
-```go
-type EventStore struct {
-    // Event persistence
-    eventPersisted  signals.SyncSignal[StoredEvent]    // Must be durable
-
-    // Event propagation
-    eventProcessed  signals.Signal[StoredEvent]        // Can be async
-
-    // Snapshots
-    snapshotTaken   signals.Signal[SnapshotEvent]      // Background task
-}
-
-func (es *EventStore) AppendEvent(event Event) error {
-    storedEvent := StoredEvent{
-        ID:        uuid.New(),
-        Type:      event.Type(),
-        Data:      event.Data(),
-        Timestamp: time.Now(),
-    }
-
-    // Synchronous persistence (transaction critical)
-    if err := es.eventPersisted.TryEmit(context.Background(), storedEvent); err != nil {
-        return fmt.Errorf("failed to persist event: %w", err)
-    }
-
-    // Asynchronous processing (fire and forget)
-    go es.eventProcessed.Emit(context.Background(), storedEvent)
-
-    return nil
-}
-```
-
-## Advanced Performance Tuning
-
-### **Memory Pool Tuning**
-```go
-type TunedSignal[T any] struct {
-    *AsyncSignal[T]
-    poolSize   int
-    workerPool chan struct{} // Limit concurrent goroutines
-}
-
-func NewTunedSignal[T any](poolSize, maxWorkers int) *TunedSignal[T] {
-    return &TunedSignal[T]{
-        AsyncSignal: signals.New[T](),
-        poolSize:    poolSize,
-        workerPool:  make(chan struct{}, maxWorkers),
+func NewEventBus() *EventBus {
+    return &EventBus{
+        orders:   signals.New[OrderEvent](),
+        payments: signals.NewSync[PaymentEvent](),
     }
 }
 
-func (ts *TunedSignal[T]) EmitControlled(ctx context.Context, data T) {
-    select {
-    case ts.workerPool <- struct{}{}:
-        defer func() { <-ts.workerPool }()
-        ts.AsyncSignal.Emit(ctx, data)
-    case <-ctx.Done():
-        return // Respect cancellation
-    }
+func (b *EventBus) Wire() {
+    // Independent async consumers (run concurrently, fire-and-forget).
+    b.orders.AddListener(handleOrderForInventory, "inventory")
+    b.orders.AddListener(handleOrderForShipping, "shipping")
+
+    // Critical sequential chain: TryEmit stops at the first failure.
+    b.payments.AddListenerWithErr(validatePayment, "validate")
+    b.payments.AddListenerWithErr(capturePayment, "capture")
+    b.payments.AddListenerWithErr(recordTransaction, "record")
+}
+
+func (b *EventBus) PlaceOrder(ctx context.Context, e OrderEvent) {
+    b.orders.Emit(ctx, e) // returns immediately
+}
+
+func (b *EventBus) ProcessPayment(ctx context.Context, e PaymentEvent) error {
+    return b.payments.TryEmit(ctx, e) // all-or-stop-on-first-error
 }
 ```
 
-### **CPU Affinity Optimization**
-```go
-type CPUAffinitySignal[T any] struct {
-    signals     []signals.Signal[T]
-    cpuCount    int
-    roundRobin  uint64
-}
+## Architecture summary
 
-func (cas *CPUAffinitySignal[T]) Emit(ctx context.Context, data T) {
-    // Distribute across CPU cores
-    cpu := atomic.AddUint64(&cas.roundRobin, 1) % uint64(cas.cpuCount)
-    cas.signals[cpu].Emit(ctx, data)
-}
-```
+| Component | Role | How it works |
+|-----------|------|--------------|
+| `BaseSignal[T]` | Shared listener registry | Immutable slice behind `atomic.Pointer`; lock-free reads, copy-on-write writes |
+| `writeMu` | Writer serialization | `sync.Mutex` taken only by Add/Remove/Reset |
+| `subscribersMap` | Duplicate-key detection | `map[string]struct{}` guarded by `writeMu`; swap-remove on delete |
+| `SyncSignal[T]` | Sequential emission | Runs listeners in order on the caller's goroutine; `TryEmit` stops on first error |
+| `AsyncSignal[T]` | Concurrent emission | Goroutine per listener; `Emit` fire-and-forget, `TryEmit` waits and joins errors |
+| `slots` semaphore | Optional async bound | `MaxConcurrent` counting semaphore — a safety valve, not a worker pool |
+| Prime growth | Capacity policy | Prime-number sequence, configurable via `SignalOptions` |
 
-## Security & Reliability Features
-
-### **Panic Recovery Architecture**
-```go
-func (s *AsyncSignal[T]) safeExecute(listener func(context.Context, T), ctx context.Context, data T) {
-    defer func() {
-        if r := recover(); r != nil {
-            // Log panic with stack trace
-            s.errorHandler.Emit(context.Background(), PanicEvent{
-                Listener: getFunctionName(listener),
-                Panic:    r,
-                Stack:    debug.Stack(),
-                Data:     data,
-            })
-        }
-    }()
-
-    listener(ctx, data)
-}
-```
-
-### **Rate Limiting Integration**
-```go
-type RateLimitedSignal[T any] struct {
-    signal  signals.Signal[T]
-    limiter *rate.Limiter
-}
-
-func (rls *RateLimitedSignal[T]) EmitWithLimit(ctx context.Context, data T) error {
-    if err := rls.limiter.Wait(ctx); err != nil {
-        return fmt.Errorf("rate limit exceeded: %w", err)
-    }
-
-    rls.signal.Emit(ctx, data)
-    return nil
-}
-```
-
-## Observability & Monitoring
-
-### **Built-in Metrics Collection**
-```go
-type InstrumentedSignal[T any] struct {
-    signal      signals.Signal[T]
-    emitCounter prometheus.Counter
-    latencyHist prometheus.Histogram
-    errorRate   prometheus.Counter
-}
-
-func (is *InstrumentedSignal[T]) Emit(ctx context.Context, data T) {
-    start := time.Now()
-    defer func() {
-        duration := time.Since(start)
-        is.emitCounter.Inc()
-        is.latencyHist.Observe(duration.Seconds())
-    }()
-
-    is.signal.Emit(ctx, data)
-}
-```
+The design is intentionally small: lock-free reads on an immutable slice, copy-on-write
+writes under a single mutex, and two thin emission strategies on top. Test coverage is
+100%.
 
 ---
 
-## Architecture Summary
+## Related documentation
 
-| **Component** | **Purpose** | **Key Innovation** |
-|---------------|-------------|--------------------|
-| **BaseSignal** | Core engine | Prime-based growth + zero-alloc |
-| **SyncSignal** | Transaction safety | Error propagation + context respect |
-| **AsyncSignal** | High throughput | Worker pools + object pooling |
-| **RWMutex** | Concurrency | Read-optimized locking |
-| **Memory Pools** | Performance | 95% allocation reduction |
-
-**This architecture delivers world-class performance while maintaining simplicity and reliability.** ▶
-
----
-
-## Deep Dive Resources
-
-| **Topic** | **Link** | **Focus** |
-|-----------|----------|-----------|
-| **Getting Started** | [Getting Started](getting_started.md) | Quick implementation guide |
-| **Core Concepts** | [Concepts](concepts.md) | Design patterns & best practices |
-| **API Reference** | [API Reference](api_reference.md) | Complete method documentation |
-
-**Ready to build lightning-fast event systems? Let's go! ⚡**
+| Topic | Link |
+|-------|------|
+| Getting started | [Getting Started](getting_started.md) |
+| Core concepts | [Concepts](concepts.md) |
+| API reference | [API Reference](api_reference.md) |

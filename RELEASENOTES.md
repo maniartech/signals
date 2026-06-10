@@ -31,6 +31,8 @@
   - `AddOnce` gained the optional `key` argument, and the separate `AddOnceWithKey` was removed/folded into it.
   - `AddOnceWithErr` is new: an error-returning one-shot listener that is consumed on attempt.
 - `signals.SetPanicHandler` — configures how recovered async-listener panics are reported (default: standard library `log`).
+- **Lock-free, copy-on-write listener core.** Reads (every `Emit`/`TryEmit`) are a single atomic load of an immutable subscriber slice — no lock, no per-emit snapshot copy, no allocation on the read path. Writes (`AddListener`/`RemoveListener`/`Reset`) serialize on a write mutex and publish a freshly built slice. This makes concurrent sync emission scale near-linearly; the trade is that writes are O(n) by design (a signal emits far more often than it mutates its listener set).
+- **Bounded async dispatch via `SignalOptions.MaxConcurrent`.** Opt-in counting semaphore that caps how many async handler goroutines run at once; excess handlers park (nothing is dropped) until a slot frees. Unset/0 keeps the default unbounded dispatch. It is a safety valve for protecting a slow downstream dependency, not a throughput optimization. `signals.DefaultMaxConcurrent()` returns a recommended starting value (2×NumCPU).
 - Zero-value `SyncSignal` / `AsyncSignal` are now safe to use without constructors.
 - `SignalOptions.GrowthFunc` is now honored when the subscriber list grows.
 

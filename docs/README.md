@@ -2,7 +2,7 @@
 
 **High-Performance, Production-Ready In-Process Event System for Go**
 
-Welcome to the complete documentation for the Signals library - a sub-10 nanosecond, zero-allocation event system designed for mission-critical Go applications.
+Welcome to the complete documentation for the Signals library - a lock-free, copy-on-write event system for Go. Its synchronous read path is sequential and zero-allocation (single-listener emit ~9 ns / 0 allocs), and its correctness is hardened by extensive race, fuzz, and stress testing for mission-critical applications.
 
 ## Quick Navigation
 
@@ -19,7 +19,7 @@ Master the fundamental concepts and design patterns. Learn when to use async vs 
 Complete API documentation with all methods, interfaces, and usage examples. Covers both AsyncSignal and SyncSignal with detailed code samples.
 
 ### [Architecture](./architecture.md)
-Deep dive into the engineering excellence behind the 5.66ns/op performance. Understand the zero-allocation design, memory management, and concurrency patterns.
+Deep dive into the lock-free, copy-on-write design (atomic immutable slice plus a write mutex). Understand the zero-allocation sync read path, the async dispatch model, and the concurrency patterns.
 
 ---
 
@@ -43,9 +43,9 @@ Deep dive into the engineering excellence behind the 5.66ns/op performance. Unde
 ## Key Features Covered
 
 ### Performance
-- **5.66ns/op** single listener emit with zero allocations
-- **Enterprise-grade** concurrency testing and validation
-- **Zero-allocation** critical paths for high-frequency operations
+- **Zero-allocation sync read path** - single-listener `Emit` ~9 ns / 0 allocs (AMD Ryzen 7 5700G)
+- **Lock-free reads** via copy-on-write - concurrent emit ~1.3 ns
+- **Extensively tested** for correctness under extreme concurrency (race, fuzz, stress)
 
 ### Reliability
 - **Context-aware** operations with cancellation and timeouts
@@ -99,11 +99,18 @@ if err := OrderProcessed.TryEmit(ctx, order); err != nil {
 
 ## Performance Benchmarks
 
-| Benchmark | Iterations | Time/Op | Memory/Op | Allocs/Op |
-|-----------|------------|---------|-----------|-----------|
-| **Single Listener** | 196,613,109 | **5.66ns** | **0 B** | **0 allocs** |
-| **Concurrent Emit** | 41,751,328 | **28.55ns** | **0 B** | **0 allocs** |
-| **100 Listeners** | 34,066 | 35.87μs | 42 B | 2 allocs |
+Measured on an AMD Ryzen 7 5700G with `go test -count=6`. Sync emit is sequential; async `Emit` numbers measure **dispatch rate** (goroutine-per-listener fire-and-forget), not listener completion.
+
+| Benchmark | Time/Op | Memory/Op | Allocs/Op |
+|-----------|---------|-----------|-----------|
+| **Sync Emit, 1 listener** | ~9 ns | 0 B | 0 allocs |
+| **Sync Emit, 10 listeners** | ~39 ns | 0 B | 0 allocs |
+| **Sync Emit, concurrent** | ~1.3 ns | 0 B | 0 allocs |
+| **Sync TryEmit, 1 listener** | ~11 ns | 0 B | 0 allocs |
+| **Async Emit dispatch, 1 listener** | ~260 ns | 208 B | 2 allocs |
+| **Async Emit dispatch, 100 listeners** | ~28 µs | — | — |
+
+Reproduce with: `go test -run '^$' -bench=. -benchmem -count=6 ./tests/`
 
 ## Contributing to Documentation
 

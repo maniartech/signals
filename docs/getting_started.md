@@ -2,7 +2,7 @@
 
 > **From zero to production-ready in-process event system in 5 minutes**
 
-Welcome to the fastest, most reliable **in-process event system** for Go monolithic applications! This guide will get you up and running with military-grade signal processing for **package coordination within your Go application**.
+Welcome to a lightweight, type-safe **in-process event system** for Go monolithic applications! This guide will get you up and running with battle-tested signal processing — hardened by an extensive race, fuzz, and stress gauntlet — for **package coordination within your Go application**.
 
 ## Real-World Example: Monolithic E-commerce Package Coordination
 
@@ -251,7 +251,7 @@ func init() {
 - ▪ **Loose Coupling**: Packages don't directly depend on each other
 - ▨ **Easy Testing**: Mock individual package listeners easily
 - ▤ **Simple Debugging**: All code runs in same process/debugger
-- ▷ **High Performance**: Sub-microsecond event processing (11ns/op)
+- ▷ **High Performance**: The synchronous read path is allocation-free — emitting to one listener costs ~9 ns (0 B / 0 allocs) on an AMD Ryzen 7 5700G. Async `Emit` measures dispatch rate (~260 ns to hand off one listener to its own goroutine), not completion. Reproduce with `go test -run '^$' -bench=. -benchmem -count=6 ./tests/`.
 - ● **Reliability**: No network failures, connection pools, or timeouts
 
 **▪ Perfect For:**
@@ -268,11 +268,11 @@ func init() {
 ## Installation
 
 ```bash
-# Get the latest version (v1.3.0+)
+# Get the latest version (v1.4.0+)
 go get github.com/maniartech/signals@latest
 
 # Or specify a version
-go get github.com/maniartech/signals@v1.3.0
+go get github.com/maniartech/signals@v1.4.0
 ```
 
 ### Requirements
@@ -606,7 +606,7 @@ func ValidatePayment(ctx context.Context, event events.OrderProcessingEvent) err
     return nil
 }
 
-// All validation happens in same process - microsecond coordination!
+// All validation happens in the same process - no network hops, just sequential calls!
 ```
 
 ## Essential Data Types
@@ -940,7 +940,7 @@ func TestErrorHandling(t *testing.T) {
 ### **Common Next Steps:**
 
 1. **[📖 Read Core Concepts](concepts.md)** - Understanding when to use sync vs async
-2. **[🏗️ Explore Architecture](architecture.md)** - How signals achieve sub-10ns performance
+2. **[🏗️ Explore Architecture](architecture.md)** - How the lock-free copy-on-write design keeps the sync read path allocation-free
 3. **[🔧 Check Real Examples](concepts.md#production-examples)** - Battle-tested patterns from production systems
 4. **[📚 API Reference](api_reference.md)** - Complete method documentation
 
