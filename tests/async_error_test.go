@@ -482,3 +482,34 @@ func TestBounded_TryEmitRespectsCtxDeadline(t *testing.T) {
 		t.Fatal("TryEmit hung on a stuck handler instead of returning at the ctx deadline")
 	}
 }
+
+// TestAsyncErr_TryEmitJoinRaceFree exercises the concurrent per-index error
+// collection in async TryEmit under the race detector: k error-returning listeners
+// all fail at once, and the joined result must contain every one of them. Repeated
+// trials give the race detector many chances to flag an unsynchronized write to the
+// errs slice or an unordered read of it — closing the gap where the happens-before of
+// the errs[idx] writes vs the post-wg.Wait errors.Join read was argued only in
+// comments, never run under -race with multiple failing listeners.
+func TestAsyncErr_TryEmitJoinRaceFree(t *testing.T) {
+	const k = 16
+	listenerErrs := make([]error, k)
+	for i := range listenerErrs {
+		listenerErrs[i] = errors.New("listener failed") // distinct identities; errors.Is matches each
+	}
+	for trial := 0; trial < 50; trial++ {
+		sig := signals.New[int]()
+		for i := 0; i < k; i++ {
+			e := listenerErrs[i]
+			sig.AddListenerWithErr(func(ctx context.Context, v int) error { return e })
+		}
+		joined := sig.TryEmit(context.Background(), trial)
+		if joined == nil {
+			t.Fatalf("trial %d: expected a joined error, got nil", trial)
+		}
+		for i, e := range listenerErrs {
+			if !errors.Is(joined, e) {
+				t.Fatalf("trial %d: joined error is missing listener %d's error", trial, i)
+			}
+		}
+	}
+}

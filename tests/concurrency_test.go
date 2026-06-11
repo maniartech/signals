@@ -787,3 +787,29 @@ func TestSyncSignal_StressTest(t *testing.T) {
 
 	t.Logf("Stress test completed: %d operations", atomic.LoadInt32(&operations))
 }
+
+// TestHappensBefore_AddVisibleToEmit proves the FR-9 happens-before guarantee across
+// goroutines: a listener added in goroutine A — with a channel close establishing the
+// happens-before edge — is observed by an Emit that the main goroutine begins after
+// receiving on that channel. A SyncSignal makes the observation deterministic (the
+// listener runs before Emit returns). Many trials under -race catch any missing
+// synchronization on the published listener set. This is the cross-goroutine
+// visibility test the memory-model contract in doc.go claims to be backed by.
+func TestHappensBefore_AddVisibleToEmit(t *testing.T) {
+	for trial := 0; trial < 500; trial++ {
+		sig := signals.NewSync[int]()
+		ready := make(chan struct{})
+		var observed atomic.Bool
+		go func() {
+			sig.AddListener(func(ctx context.Context, v int) {
+				observed.Store(true)
+			})
+			close(ready) // AddListener happens-before this close
+		}()
+		<-ready // receive happens-after close => the Add happens-before the Emit below
+		sig.Emit(context.Background(), trial)
+		if !observed.Load() {
+			t.Fatalf("trial %d: Emit did not observe a listener added-before it", trial)
+		}
+	}
+}
