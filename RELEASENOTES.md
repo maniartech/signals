@@ -1,6 +1,12 @@
 # Release Notes
 
-## Unreleased
+## v1.4.0
+
+**Released**: June 2026 *(set the date to the tag day)*
+
+> v1.4.0 ships **two** breaking changes, both deliberate and documented below: a
+> silent **runtime** change to `AsyncSignal.Emit`, and a compile-time **source**
+> change to the `Signal[T]` interface. Read both before upgrading.
 
 ### ⚠️ Breaking Changes
 
@@ -8,7 +14,8 @@
 > listeners finished, change `Emit` → `TryEmit`. Your code still compiles;
 > the behavior changes silently at runtime, so update before upgrading.
 
-- `AsyncSignal.Emit` is now fire-and-forget: it returns immediately without waiting for listeners. Use the new `TryEmit` for the previous blocking behavior (ignore its returned error if you only want to wait for all listeners).
+- **Runtime (silent):** `AsyncSignal.Emit` is now fire-and-forget — it returns immediately without waiting for listeners. Use the new `TryEmit` for the previous blocking behavior (ignore its returned error if you only want to wait for all listeners).
+- **Source (compile-time): the `Signal[T]` interface gained nine methods** — `TryEmit`, `OnError`, `AddListenerWithErr`, `AddOnce`, `AddOnceWithErr`, `AddListenerWithCancel`, `AddOnceWithCancel`, `Keys`, and `HasKey` (it had six in v1.3; it has fifteen now). If you wrote your own type that implements `Signal[T]`, it will **fail to compile** until you add these methods. Code that simply *uses* signals (holding `*SyncSignal`/`*AsyncSignal`, or the interface returned by the constructors) is unaffected. This is an additive interface extension — no existing method changed signature. We chose to extend `Signal[T]` directly rather than split the new methods into a separate interface; see the migration note below.
 - `SyncSignal.Emit` now invokes error-returning listeners best-effort; their errors are routed to `OnError` sinks rather than stopping the chain. `TryEmit` still stops at the first listener error or context cancellation and returns it.
 - `Emit` (sync and async) skips all listeners when the provided context is already canceled.
 
@@ -30,6 +37,7 @@
 - **Registration is now a symmetric 2x2 matrix** on the `Signal[T]` interface: `AddListener`, `AddListenerWithErr`, `AddOnce`, and `AddOnceWithErr`. Each takes an optional variadic `key` (absent/empty = unkeyed; a duplicate key returns `-1`).
   - `AddOnce` gained the optional `key` argument, and the separate `AddOnceWithKey` was removed/folded into it.
   - `AddOnceWithErr` is new: an error-returning one-shot listener that is consumed on attempt.
+- **Handle-based subscription** — `AddListenerWithCancel` and `AddOnceWithCancel` add a listener and return an idempotent canceller `func()` that removes it, for callers who would rather hold a teardown func (e.g. `defer cancel()`) than invent and track a key. `AddOnceWithCancel` can also remove a one-shot *before* it fires (abandoning a wait), and a cancel that wins the race guarantees the handler does not run. Both accept the same optional `key`; a duplicate caller key yields a no-op canceller.
 - `signals.SetPanicHandler` — configures how recovered async-listener panics are reported (default: standard library `log`).
 - **Lock-free, copy-on-write listener core.** Reads (every `Emit`/`TryEmit`) are a single atomic load of an immutable subscriber slice — no lock, no per-emit snapshot copy, no allocation on the read path. Writes (`AddListener`/`RemoveListener`/`Reset`) serialize on a write mutex and publish a freshly built slice. This makes concurrent sync emission scale near-linearly; the trade is that writes are O(n) by design (a signal emits far more often than it mutates its listener set).
 - **Bounded async dispatch via `SignalOptions.MaxConcurrent`.** Opt-in counting semaphore that caps how many async handler goroutines run at once; excess handlers park (nothing is dropped) until a slot frees. Unset/0 keeps the default unbounded dispatch. It is a safety valve for protecting a slow downstream dependency, not a throughput optimization. `signals.DefaultMaxConcurrent()` returns a recommended starting value (2×NumCPU).
@@ -41,6 +49,23 @@
 - `RemoveListener("")` no longer removes unkeyed listeners.
 - Keyed listeners are tracked with an explicit `keyed` flag.
 - Race and staticcheck findings in tests.
+
+### Migration (v1.3.x → v1.4.0)
+
+| If you... | Do this |
+|---|---|
+| relied on `AsyncSignal.Emit` blocking until listeners finished | switch to `TryEmit` (ignore the returned error if you only need to wait) |
+| called `EmitAndWait` / `EmitAndWaitErr` | use `TryEmit` (single method; discard the error to wait-only) |
+| called `AddOnceWithKey(handler, key)` | use `AddOnce(handler, key)` — the key is now an optional variadic argument |
+| implement your own `Signal[T]` type | add the nine new methods (`TryEmit`, `OnError`, `AddListenerWithErr`, `AddOnce`, `AddOnceWithErr`, `AddListenerWithCancel`, `AddOnceWithCancel`, `Keys`, `HasKey`) |
+| want to remove a listener without inventing a key | use `AddListenerWithCancel`/`AddOnceWithCancel` and keep the returned `func()` |
+| just call `signals.New[T]()` / `NewSync[T]()` and use the result | nothing changes at compile time — but review the `Emit` runtime change above |
+
+We extended `Signal[T]` directly (rather than splitting the additions into a separate
+`KeyedSignal`/`OnceSignal` interface) because external implementers of an in-process signal
+interface are vanishingly rare, the change is purely additive, and a split would permanently
+fracture the polymorphic surface. Both concrete types are compile-time-asserted to satisfy
+the full interface.
 
 *Incorporates PR #14 by [@joshuafuller](https://github.com/joshuafuller) with maintainer fixes on top.*
 
