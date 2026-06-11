@@ -241,6 +241,14 @@ UserLoggedIn.AddListenerWithErr(func(ctx context.Context, user User) error {
 UserLoggedIn.AddOnce(func(ctx context.Context, user User) { /* ... */ })
 UserLoggedIn.AddOnceWithErr(func(ctx context.Context, user User) error { return nil })
 
+// Handle-based subscription: get a canceller func instead of inventing a key.
+cancel := UserLoggedIn.AddListenerWithCancel(func(ctx context.Context, user User) { /* ... */ })
+defer cancel() // idempotent; removes the listener, no key bookkeeping
+
+// One-shot with a canceller — can be removed BEFORE it fires (abandon a wait)
+stop := UserLoggedIn.AddOnceWithCancel(func(ctx context.Context, user User) { /* ... */ })
+// ... stop() removes it if it hasn't fired yet; a cancel that wins the race guarantees it won't run
+
 // Emit (schedules listeners and returns immediately; listener errors go to OnError)
 UserLoggedIn.Emit(ctx, user)
 

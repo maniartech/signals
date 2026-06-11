@@ -147,6 +147,21 @@ type Signal[T any] interface {
 	// It is "consumed on attempt": it fires and self-removes even if it errors.
 	AddOnceWithErr(handler SignalListenerErr[T], key ...string) int
 
+	// AddListenerWithCancel adds a repeating listener and returns an idempotent
+	// canceller func that removes it — the handle-based counterpart of AddListener for
+	// callers who would rather hold a teardown func than invent and track a key (e.g.
+	// `cancel := sig.AddListenerWithCancel(h); defer cancel()`). The optional key
+	// behaves as in AddListener; a duplicate caller key adds nothing and yields a
+	// no-op canceller.
+	AddListenerWithCancel(handler SignalListener[T], key ...string) func()
+
+	// AddOnceWithCancel adds a one-shot listener and returns an idempotent canceller
+	// func — the handle-based counterpart of AddOnce. Beyond teardown, the canceller
+	// can remove the one-shot BEFORE it fires (e.g. when abandoning a wait for an event
+	// that may never arrive); a cancel that wins the race guarantees the handler does
+	// not run. Calling it after the one-shot fired, or more than once, is a safe no-op.
+	AddOnceWithCancel(handler SignalListener[T], key ...string) func()
+
 	// Keys returns a snapshot of all caller-supplied listener keys, safe to read
 	// while other goroutines mutate the listener set. Empty-string keys are omitted.
 	Keys() []string

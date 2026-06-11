@@ -79,6 +79,20 @@ func (s *SyncSignal[T]) AddOnceWithErr(handler SignalListenerErr[T], key ...stri
 	return s.baseSignal.AddOnceWithErr(handler, key...)
 }
 
+// AddListenerWithCancel registers a repeating listener and returns a canceller func
+// that removes it. See BaseSignal.AddListenerWithCancel.
+func (s *SyncSignal[T]) AddListenerWithCancel(handler SignalListener[T], key ...string) func() {
+	s.ensureBase()
+	return s.baseSignal.AddListenerWithCancel(handler, key...)
+}
+
+// AddOnceWithCancel registers a one-time listener and returns a canceller func that
+// removes it (including before it fires). See BaseSignal.AddOnceWithCancel.
+func (s *SyncSignal[T]) AddOnceWithCancel(handler SignalListener[T], key ...string) func() {
+	s.ensureBase()
+	return s.baseSignal.AddOnceWithCancel(handler, key...)
+}
+
 // Keys returns a snapshot of all listener keys. See BaseSignal.Keys for details.
 func (s *SyncSignal[T]) Keys() []string {
 	s.ensureBase()

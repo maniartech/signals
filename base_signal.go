@@ -379,6 +379,81 @@ func (s *BaseSignal[T]) addOnce(handler SignalListener[T], key string, userKeyed
 	return s.add(keyedListener[T]{key: k, keyed: true, auto: auto, listener: wrapper})
 }
 
+// AddListenerWithCancel adds a repeating listener and returns a canceller func that
+// removes it — the handle-based counterpart of AddListener for callers who do not
+// want to invent and track a key. It is to AddListener what context.WithCancel is to
+// a plain context: keep the returned func and call it to tear the subscription down
+// (e.g. via defer), with no key bookkeeping.
+//
+// The optional key behaves exactly as in AddListener: a supplied key makes the
+// listener addressable and subject to duplicate detection; an absent/empty key is
+// unkeyed but still removable via the returned func (an internal key is synthesized
+// so the canceller can target it, hidden from Keys()).
+//
+// The canceller is idempotent and safe: calling it more than once removes the
+// listener at most once (so a later re-add of the same caller key is never removed by
+// a stale canceller). If a supplied key already exists (duplicate), nothing is added
+// and the returned func is a no-op — it will not remove the pre-existing listener.
+// Like RemoveListener, cancellation affects subsequent emissions; an emission already
+// in flight (which snapshotted this listener) may still deliver to it.
+func (s *BaseSignal[T]) AddListenerWithCancel(handler SignalListener[T], key ...string) func() {
+	if handler == nil {
+		panic("listener cannot be nil")
+	}
+	// Reuse the one-shot key synthesizer purely as an internal auto-key generator for
+	// the unkeyed case; a supplied key is used as-is.
+	k, auto := oneShotKey(oneShotUserKey(key))
+	if s.add(keyedListener[T]{key: k, keyed: true, auto: auto, listener: handler}) == -1 {
+		return func() {} // duplicate caller key: do not remove someone else's listener
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() { s.RemoveListener(k) })
+	}
+}
+
+// AddOnceWithCancel adds a one-shot listener (fires once, then self-removes) and
+// returns a canceller func — the handle-based counterpart of AddOnce. Beyond the
+// teardown convenience, the canceller serves a one-shot-specific purpose that AddOnce
+// alone cannot: it removes a PENDING one-shot before it fires (e.g. when you give up
+// waiting for an event that may never arrive), preventing an unkeyed one-shot from
+// lingering in the listener set forever.
+//
+// The canceller is idempotent and races cleanly against the fire: it flips the same
+// internal "fired" guard the one-shot uses, so a cancel that wins the race guarantees
+// the handler will not run (stronger than a plain RemoveListener, which only affects
+// subsequent emits). Calling it after the one-shot has already fired, or more than
+// once, is a safe no-op. A duplicate caller key adds nothing and returns a no-op
+// canceller. The optional key behaves as in AddOnce.
+func (s *BaseSignal[T]) AddOnceWithCancel(handler SignalListener[T], key ...string) func() {
+	if handler == nil {
+		panic("listener cannot be nil")
+	}
+	k, auto := oneShotKey(oneShotUserKey(key))
+
+	var fired atomic.Bool
+	wrapper := func(ctx context.Context, payload T) {
+		if !fired.CompareAndSwap(false, true) {
+			return // already fired by a concurrent emission, or canceled
+		}
+		s.RemoveListener(k) // remove self first (see addOnce for the rationale)
+		handler(ctx, payload)
+	}
+
+	if s.add(keyedListener[T]{key: k, keyed: true, auto: auto, listener: wrapper}) == -1 {
+		return func() {} // duplicate caller key: no-op canceller
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			// Win the race against an in-flight fire: claiming the guard first makes the
+			// handler's CAS fail so it never runs; then drop it from the listener set.
+			fired.CompareAndSwap(false, true)
+			s.RemoveListener(k)
+		})
+	}
+}
+
 // RemoveListener removes a listener identified by the given key from the signal.
 // This method uses a swap-remove strategy for O(1) deletion, which may change
 // the order of remaining listeners.

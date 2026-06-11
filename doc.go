@@ -66,8 +66,12 @@
 //   - Key contract: an absent or empty-string key means unkeyed. Keys() never
 //     contains the empty string or internally generated keys; HasKey("") is
 //     always false; unkeyed listeners are invisible to all key-based APIs. The
-//     int returned by the Add* methods is the subscriber count (or -1 on a
-//     duplicate key) — it is not a positional handle, and removal is by key only.
+//     int returned by the count-returning Add* methods (AddListener,
+//     AddListenerWithErr, AddOnce, AddOnceWithErr) is the subscriber count (or -1
+//     on a duplicate key) — it is not a positional handle. Removal is by key
+//     (RemoveListener), or via the canceller func returned by the WithCancel
+//     variants (AddListenerWithCancel, AddOnceWithCancel); there is no
+//     remove-by-position.
 //
 // # Panics
 //

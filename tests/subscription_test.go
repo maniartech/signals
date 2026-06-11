@@ -397,3 +397,168 @@ func TestSignalListenerErr(t *testing.T) {
 		t.Error("Expected error for negative value")
 	}
 }
+
+// --- AddListenerWithCancel: handle-based repeating subscription ---
+
+func TestAddListenerWithCancel_NilPanics(t *testing.T) {
+	sig := signals.NewSync[int]()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for nil listener")
+		}
+	}()
+	sig.AddListenerWithCancel(nil)
+}
+
+func TestAddListenerWithCancel_CancelRemovesListener(t *testing.T) {
+	sig := signals.NewSync[int]()
+	var calls int32
+	cancel := sig.AddListenerWithCancel(func(ctx context.Context, v int) {
+		atomic.AddInt32(&calls, 1)
+	})
+	sig.Emit(context.Background(), 1) // fires
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected 1 call before cancel, got %d", got)
+	}
+	cancel()
+	if sig.Len() != 0 {
+		t.Fatalf("expected 0 listeners after cancel, got %d", sig.Len())
+	}
+	sig.Emit(context.Background(), 2) // must not fire
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected still 1 call after cancel, got %d", got)
+	}
+}
+
+// Calling the canceller twice is safe, and a stale canceller must never remove a
+// later re-add of the same caller key (the sync.Once guard).
+func TestAddListenerWithCancel_IdempotentAndStaleSafe(t *testing.T) {
+	sig := signals.NewSync[int]()
+	cancel := sig.AddListenerWithCancel(func(ctx context.Context, v int) {}, "k")
+	cancel()
+	cancel() // double cancel: safe no-op
+
+	var calls int32
+	if n := sig.AddListener(func(ctx context.Context, v int) { atomic.AddInt32(&calls, 1) }, "k"); n != 1 {
+		t.Fatalf("expected re-add under same key to succeed (count 1), got %d", n)
+	}
+	cancel() // stale: sync.Once already fired, must NOT remove the re-added listener
+	sig.Emit(context.Background(), 1)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("stale canceller removed the re-added listener; got %d calls", got)
+	}
+}
+
+// A duplicate caller key adds nothing and the returned canceller must be a no-op
+// (it must not remove the pre-existing listener that owns that key).
+func TestAddListenerWithCancel_DuplicateKeyNoOpCanceller(t *testing.T) {
+	sig := signals.NewSync[int]()
+	var first int32
+	sig.AddListener(func(ctx context.Context, v int) { atomic.AddInt32(&first, 1) }, "dup")
+	cancel := sig.AddListenerWithCancel(func(ctx context.Context, v int) {}, "dup")
+	if sig.Len() != 1 {
+		t.Fatalf("expected duplicate not added (len 1), got %d", sig.Len())
+	}
+	cancel()
+	if sig.Len() != 1 {
+		t.Fatalf("no-op canceller removed the pre-existing listener; len %d", sig.Len())
+	}
+	sig.Emit(context.Background(), 1)
+	if atomic.LoadInt32(&first) != 1 {
+		t.Fatal("pre-existing listener was wrongly removed")
+	}
+}
+
+func TestAddListenerWithCancel_AsyncRemoves(t *testing.T) {
+	sig := signals.New[int]()
+	var calls int32
+	cancel := sig.AddListenerWithCancel(func(ctx context.Context, v int) {
+		atomic.AddInt32(&calls, 1)
+	})
+	cancel()
+	_ = sig.TryEmit(context.Background(), 1) // waits; handler removed, must not run
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("expected 0 calls after cancel, got %d", got)
+	}
+}
+
+// --- AddOnceWithCancel: handle-based one-shot, cancellable before it fires ---
+
+func TestAddOnceWithCancel_NilPanics(t *testing.T) {
+	sig := signals.NewSync[int]()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for nil listener")
+		}
+	}()
+	sig.AddOnceWithCancel(nil)
+}
+
+func TestAddOnceWithCancel_CancelBeforeFire(t *testing.T) {
+	sig := signals.NewSync[int]()
+	var calls int32
+	cancel := sig.AddOnceWithCancel(func(ctx context.Context, v int) {
+		atomic.AddInt32(&calls, 1)
+	})
+	if sig.Len() != 1 {
+		t.Fatalf("expected 1 pending one-shot, got %d", sig.Len())
+	}
+	cancel() // remove before it ever fires
+	if sig.Len() != 0 {
+		t.Fatalf("expected 0 listeners after cancel, got %d", sig.Len())
+	}
+	sig.Emit(context.Background(), 1)
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("one-shot fired after being canceled; got %d", got)
+	}
+}
+
+func TestAddOnceWithCancel_FiresOnceThenCancelNoOp(t *testing.T) {
+	sig := signals.NewSync[int]()
+	var calls int32
+	cancel := sig.AddOnceWithCancel(func(ctx context.Context, v int) {
+		atomic.AddInt32(&calls, 1)
+	})
+	sig.Emit(context.Background(), 1) // fires once, self-removes
+	sig.Emit(context.Background(), 2) // one-shot is gone
+	cancel()                          // after fire: safe no-op
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected exactly 1 fire, got %d", got)
+	}
+}
+
+// The canceller racing the fire must never let the handler run more than once
+// (the shared atomic fired-guard). Run under -race.
+func TestAddOnceWithCancel_ConcurrentCancelVsFireAtMostOnce(t *testing.T) {
+	for trial := 0; trial < 100; trial++ {
+		sig := signals.New[int]()
+		var calls int32
+		cancel := sig.AddOnceWithCancel(func(ctx context.Context, v int) {
+			atomic.AddInt32(&calls, 1)
+		})
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() { defer wg.Done(); _ = sig.TryEmit(context.Background(), 1) }()
+		}
+		wg.Add(1)
+		go func() { defer wg.Done(); cancel() }()
+		wg.Wait()
+		if got := atomic.LoadInt32(&calls); got > 1 {
+			t.Fatalf("trial %d: one-shot fired %d times (must be at most once)", trial, got)
+		}
+	}
+}
+
+func TestAddOnceWithCancel_DuplicateKeyNoOp(t *testing.T) {
+	sig := signals.NewSync[int]()
+	sig.AddOnce(func(ctx context.Context, v int) {}, "once")
+	cancel := sig.AddOnceWithCancel(func(ctx context.Context, v int) {}, "once") // duplicate
+	if sig.Len() != 1 {
+		t.Fatalf("expected duplicate not added (len 1), got %d", sig.Len())
+	}
+	cancel() // no-op, must not remove the pre-existing one-shot
+	if sig.Len() != 1 {
+		t.Fatalf("no-op canceller removed pre-existing one-shot; len %d", sig.Len())
+	}
+}
