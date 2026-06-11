@@ -316,26 +316,23 @@ func TestRetro_AsyncDispatch_CancelMidLoopStops(t *testing.T) {
 
 // Test edge cases to reach 100% coverage
 
-// Test AsyncSignal ensureWorkerPool with negative size (should use default)
-func TestAsyncSignal_EnsureWorkerPool_NegativeSize(t *testing.T) {
+// Test a default (unbounded) AsyncSignal dispatches a single listener.
+func TestAsyncSignal_UnboundedDispatch(t *testing.T) {
 	sig := signals.New[int]()
 
-	// This should trigger ensureWorkerPool with default size calculation
-	// Add a listener that forces worker pool initialization
 	sig.AddListener(func(ctx context.Context, v int) {})
 	sig.Emit(context.Background(), 1)
 }
 
-// Test AsyncSignal Emit with nil listeners (edge case for fast path)
-func TestAsyncSignal_EmitWithListenerErrOnly(t *testing.T) {
-	// This tests AsyncSignal behavior when it has error listeners but can't invoke them
-	// Since AsyncSignal.Emit doesn't handle listenerErr, this tests that branch
+// Test AsyncSignal.Emit with a mix of plain and error-returning listeners — the
+// error listener runs best-effort on the Emit path (its error would route to
+// OnError; here it returns nil), and the emission completes normally.
+func TestAsyncSignal_EmitWithErrAndPlainListeners(t *testing.T) {
 	sig := signals.New[int]()
 
-	// Add regular listener first
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { return nil })
 	sig.AddListener(func(ctx context.Context, v int) {})
 
-	// Emit should work normally
 	sig.Emit(context.Background(), 1)
 }
 
@@ -523,15 +520,13 @@ func TestSyncSignal_TryEmitSingleErrorListenerReturnsError(t *testing.T) {
 	}
 }
 
-// Test AsyncSignal ensureWorkerPool edge case coverage
-func TestAsyncSignal_EnsureWorkerPoolTypeCastFailure(t *testing.T) {
+// Test AsyncSignal dispatches to many listeners of a non-int payload type.
+func TestAsyncSignal_ManyListenersBytePayload(t *testing.T) {
 	sig := signals.New[byte]()
 
-	// Force worker pool initialization by adding enough listeners
 	for i := 0; i < 25; i++ {
 		sig.AddListener(func(ctx context.Context, b byte) {})
 	}
 
-	// This should trigger the pooled worker path
 	sig.Emit(context.Background(), 42)
 }

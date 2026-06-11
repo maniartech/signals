@@ -33,7 +33,13 @@ type SignalListener[T any] func(context.Context, T)
 //
 // Returns:
 //   - error: nil if processing succeeded, or an error describing what went wrong.
-//     When TryEmit() encounters a non-nil error, it stops invoking subsequent listeners.
+//
+// How a non-nil error is handled depends on the signal type and the emit method:
+//   - SyncSignal.TryEmit stops at the first error and returns it (transactional).
+//   - AsyncSignal.TryEmit runs every listener, then returns the errors.Join of all
+//     failures (it cannot stop across goroutines).
+//   - On the best-effort Emit path (sync or async), the error does not stop the
+//     chain; it is routed to the sinks registered via OnError.
 //
 // Example:
 //

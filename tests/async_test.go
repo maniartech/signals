@@ -24,9 +24,9 @@ func TestAsyncSignal_OnlySupportsRegularListeners(t *testing.T) {
 		t.Errorf("Expected count 1, got %d", count)
 	}
 
-	// Note: AddListenerWithErr is not available on AsyncSignal
-	// This is by design - error handling is only for SyncSignal
-} // Test AsyncSignal with large number of listeners (>16) to trigger pooled worker path
+}
+
+// Test AsyncSignal fans out to many listeners (goroutine-per-listener dispatch).
 func TestAsyncSignal_LargeListenerCount(t *testing.T) {
 	sig := signals.New[int]()
 
@@ -34,7 +34,6 @@ func TestAsyncSignal_LargeListenerCount(t *testing.T) {
 	var mu sync.Mutex
 	results := make([]int, 0)
 
-	// Add more than 16 listeners to trigger pooled path
 	for i := 0; i < 20; i++ {
 		sig.AddListener(func(ctx context.Context, v int) {
 			mu.Lock()
@@ -79,11 +78,10 @@ func TestAsyncSignal_NilListenerFastPath(t *testing.T) {
 	// Should complete without issues
 }
 
-// Test AsyncSignal design principle: no error listener support
-func TestAsyncSignal_NoErrorListenerSupport(t *testing.T) {
+// Test AsyncSignal.AddListener returns the subscriber count.
+func TestAsyncSignal_AddListenerReturnsCount(t *testing.T) {
 	sig := signals.New[int]()
 
-	// AsyncSignal only supports regular listeners
 	count := sig.AddListener(func(ctx context.Context, v int) {
 		// Process async
 	})
@@ -92,35 +90,31 @@ func TestAsyncSignal_NoErrorListenerSupport(t *testing.T) {
 		t.Errorf("Expected count 1, got %d", count)
 	}
 
-	// Note: AsyncSignal.Emit only processes regular listeners
-	// Error listeners and TryEmit are exclusive to SyncSignal
 	sig.Emit(context.Background(), 1)
-} // Test AsyncSignal ensureWorkerPool edge cases
-func TestAsyncSignal_EnsureWorkerPoolEdgeCases(t *testing.T) {
+}
+
+// Test repeated AsyncSignal emits with a single listener (dispatcher is per-emit,
+// not a persistent pool — each Emit spawns a fresh dispatcher goroutine).
+func TestAsyncSignal_RepeatedEmits(t *testing.T) {
 	sig := signals.New[int]()
 
-	// Add listeners and emit to trigger worker pool creation
 	sig.AddListener(func(ctx context.Context, v int) {})
 	sig.Emit(context.Background(), 1)
-
-	// Emit again to test that worker pool is not recreated
 	sig.Emit(context.Background(), 2)
 }
 
-// Test AsyncSignal task pool reuse
-func TestAsyncSignal_TaskPoolReuse(t *testing.T) {
+// Test repeated AsyncSignal emits to many listeners complete fully each round.
+func TestAsyncSignal_ManyListenersRepeatedEmits(t *testing.T) {
 	sig := signals.New[int]()
 
-	// Add many listeners to trigger task pooling
 	var wg sync.WaitGroup
 	for i := 0; i < 25; i++ {
 		sig.AddListener(func(ctx context.Context, v int) {
-			time.Sleep(1 * time.Millisecond) // Small delay to trigger async behavior
+			time.Sleep(1 * time.Millisecond) // small delay to exercise concurrent dispatch
 			wg.Done()
 		})
 	}
 
-	// Multiple emits to test task reuse
 	for round := 0; round < 3; round++ {
 		wg.Add(25)
 		sig.Emit(context.Background(), round)
