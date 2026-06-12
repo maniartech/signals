@@ -365,6 +365,30 @@ waited for all listeners to finish.
   just **uses** signals — holding `*SyncSignal`/`*AsyncSignal` or the value returned by
   `New`/`NewSync` — is unaffected.
 
+## Patterns
+
+A GoF-style [pattern catalog](docs/patterns/README.md) documents the recurring ways to
+use signals — each page has intent, structure, a runnable example, and trade-offs. Start
+from the problem you have:
+
+| Family | Pattern | What problem it solves |
+|--------|---------|------------------------|
+| **Dispatch** — how an emission reaches listeners | [Synchronous Sequential Dispatch](docs/patterns/dispatch/synchronous-sequential-dispatch.md) | Run listeners one at a time, in registration order, on the caller's goroutine; the emit blocks until all finish. |
+| | [Fire-and-Forget Dispatch](docs/patterns/dispatch/fire-and-forget-dispatch.md) | Notify others and immediately regain control of the caller — listeners run in the background. |
+| | [Await-All Dispatch](docs/patterns/dispatch/await-all-dispatch.md) | Run listeners concurrently, but wait for every one to finish before continuing. |
+| **Reliability** — how errors & panics are handled | [Transactional Emission](docs/patterns/reliability/transactional-emission.md) | Stop the whole chain on the first failure and return that error (all-or-nothing). |
+| | [Async Error Routing](docs/patterns/reliability/async-error-routing.md) | Surface failures from fire-and-forget listeners that have no caller left to return to (`OnError`). |
+| | [Result Aggregation](docs/patterns/reliability/result-aggregation.md) | Run concurrently, wait, then collect *every* listener's error (`errors.Join`). |
+| | [Panic Isolation](docs/patterns/reliability/panic-isolation.md) | Keep one listener's panic from crashing the process or aborting its siblings. |
+| **Flow-Control** — how the system behaves under load | [Bounded Concurrency](docs/patterns/flow-control/bounded-concurrency.md) | Cap how many async listeners run at once to prevent goroutine pile-up (`MaxConcurrent`). |
+| | [Load Shedding](docs/patterns/flow-control/load-shedding.md) | Deliberately drop work to stay alive and bounded under sustained overload. *(design; post-v1.4)* |
+| | [Backpressure](docs/patterns/flow-control/backpressure.md) | Guarantee zero event loss by slowing the producer under overload (a waiting emit *is* backpressure). |
+| **Subscription Lifecycle** — registering & removing listeners | [Keyed Subscription](docs/patterns/subscription/keyed-subscription.md) | Give a listener a stable key so it can be removed, replaced, or de-duplicated later. |
+| | [One-Shot Subscription](docs/patterns/subscription/one-shot-subscription.md) | Fire a listener exactly once, then auto-unsubscribe. |
+| | [Subscription Teardown](docs/patterns/subscription/subscription-teardown.md) | Remove listeners and reclaim resources to avoid leaks — by key or via a `WithCancel` canceller. |
+| **Architectural** — structuring the event system | [Shared Event Registry](docs/patterns/architectural/shared-event-registry.md) | Declare signals as package-level variables so components communicate without coupling. |
+| | [Context-Scoped Emission](docs/patterns/architectural/context-scoped-emission.md) | Propagate cancellation, deadlines, and request-scoped values through an emission. |
+
 ## Documentation
 
 [![GoDoc](https://godoc.org/github.com/maniartech/signals?status.svg)](https://godoc.org/github.com/maniartech/signals)
