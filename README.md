@@ -16,11 +16,13 @@ simple APIs, context propagation, and predictable concurrency behavior.
 
 - 🧭 **Two Signal Types**: Async for fire-and-forget, Sync for error-aware workflows
 - 🛡️ **Context-Aware**: All listeners receive context for cancellation and timeouts
-- 🚨 **Error-Safe Operations**: `TryEmit` stops on the first error or canceled context
-- 🔒 **Thread-Safe**: Safe for concurrent Add/Remove/Emit
+- 🚨 **Error Handling**: `TryEmit` (sync: stop-on-first-error; async: `errors.Join` of all) and `OnError` sinks on the best-effort `Emit` path
+- ⚡ **Lock-Free Reads**: Copy-on-write core — `Emit` is a single atomic load, no lock or allocation on the read path
+- 🔒 **Thread-Safe**: Safe for concurrent Add/Remove/Emit, proven under `-race` with property + fuzz + stress tests
+- 🎯 **Rich Subscriptions**: `AddOnce`/`AddOnceWithErr` one-shots, `AddListenerWithCancel`/`AddOnceWithCancel` handle-based teardown, plus `Keys`/`HasKey` introspection
+- 🚦 **Bounded Async Dispatch**: opt-in `MaxConcurrent` counting-semaphore safety valve (unbounded by default)
 - 🧰 **Zero-Value Usable**: Zero-value signals can be used without explicit initialization
 - 📦 **Zero Dependencies**: Pure Go, no external dependencies
-- 🚀 **Async & Sync**: Both fire-and-forget and error-handling patterns
 
 ✅ **Production-Ready**: Used by [ManiarTech®️](https://maniartech.com) and other companies in mission-critical applications.
 
@@ -306,10 +308,28 @@ if isProduction {
     UserRegistered.AddListener(sendToAnalytics)
 }
 
-// Dynamic listener management
-key := UserRegistered.AddListener(temporaryHandler)
-// Later...
-UserRegistered.RemoveListener(key)
+// Dynamic listener management — NOTE: AddListener returns the subscriber COUNT
+// (or -1 on a duplicate key), NOT a handle. Remove by the key you supplied...
+UserRegistered.AddListener(temporaryHandler, "temp")
+UserRegistered.RemoveListener("temp")
+// ...or skip keys entirely and keep the canceller from AddListenerWithCancel:
+cancel := UserRegistered.AddListenerWithCancel(temporaryHandler)
+defer cancel()
+
+// Introspection & bulk management
+n := UserRegistered.Len()             // number of listeners
+empty := UserRegistered.IsEmpty()     // n == 0
+has := UserRegistered.HasKey("temp")  // O(1) keyed-existence check
+keys := UserRegistered.Keys()         // snapshot of caller-supplied keys (auto/empty omitted)
+UserRegistered.Reset()                // remove every listener
+
+// Bounded async dispatch (opt-in safety valve; UNBOUNDED by default). Caps how many
+// handlers run concurrently via a counting semaphore; excess parks (never dropped,
+// caller never blocked). Size it to your slowest dependency, never the listener count.
+bounded := signals.NewWithOptions[User](&signals.SignalOptions{
+    MaxConcurrent: signals.DefaultMaxConcurrent(), // = 2 * runtime.NumCPU()
+})
+_ = bounded
 
 // Context cancellation
 ctx, cancel := context.WithCancel(context.Background())
@@ -338,6 +358,12 @@ waited for all listeners to finish.
   `AsyncSignal` (and on the `Signal[T]` interface). It receives error-returning
   listeners' errors on the `Emit` path; on the `TryEmit` path those errors are
   returned to the caller instead.
+- **Source break (compile-time):** the `Signal[T]` **interface** gained nine methods in
+  v1.4 — `TryEmit`, `OnError`, `AddListenerWithErr`, `AddOnce`, `AddOnceWithErr`,
+  `AddListenerWithCancel`, `AddOnceWithCancel`, `Keys`, and `HasKey`. If you wrote your
+  own type that implements `Signal[T]`, it won't compile until you add them. Code that
+  just **uses** signals — holding `*SyncSignal`/`*AsyncSignal` or the value returned by
+  `New`/`NewSync` — is unaffected.
 
 ## Documentation
 
