@@ -263,6 +263,26 @@ func (s *AsyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 	}
 }
 
+// acquireSlot reserves a concurrency slot when the signal is bounded, parking
+// until one is free. With a cancellable ctx it aborts the parked acquire on
+// cancellation and returns false (so the caller starts no further handler);
+// otherwise it returns true once a slot is held, or immediately if unbounded.
+func (s *AsyncSignal[T]) acquireSlot(ctx context.Context) bool {
+	if s.slots == nil {
+		return true
+	}
+	if ctx == nil {
+		s.slots <- struct{}{}
+		return true
+	}
+	select {
+	case s.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // dispatch contains the shared scheduling logic for Emit and TryEmit. Each
 // listener runs in its own goroutine. When a MaxConcurrent bound is configured,
 // a semaphore slot is acquired before each handler is started and released when it
@@ -288,16 +308,8 @@ func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []
 			// Acquire a concurrency slot if bounded. When saturated, park here — but
 			// if ctx is cancellable, abort the parked acquire on cancellation rather
 			// than starting a handler after the deadline.
-			if s.slots != nil {
-				if ctx == nil {
-					s.slots <- struct{}{}
-				} else {
-					select {
-					case s.slots <- struct{}{}:
-					case <-ctx.Done():
-						return
-					}
-				}
+			if !s.acquireSlot(ctx) {
+				return
 			}
 
 			if wg != nil {
