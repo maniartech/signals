@@ -5,6 +5,8 @@ import (
 	"fmt"
 )
 
+// RunAsync demonstrates registering listeners on asynchronous signals and
+// emitting create/update/delete events to them.
 func RunAsync() {
 
 	// Add a listener to the RecordCreatedAsync signal

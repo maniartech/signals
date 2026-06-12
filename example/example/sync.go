@@ -5,6 +5,8 @@ import (
 	"fmt"
 )
 
+// RunSync demonstrates registering listeners on synchronous signals and
+// emitting create/update/delete events to them.
 func RunSync() {
 
 	// Add a listener to the RecordCreated signal
