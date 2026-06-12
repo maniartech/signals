@@ -83,3 +83,29 @@ above. Headlines (same hardware as the baseline):
   allocation-free is the correct bargain. Workloads that churn listeners as hot as
   they emit are **not** a good fit for this design.
 
+## v1.4 final numbers (the README perf section)
+
+`v1.4-final.txt` is the full `-count=6` capture of the **complete v1.4 benchmark
+suite** (sync emit/try, error-routing, async dispatch + waited + bounded, write
+churn) on the same hardware. It is the source for the README "Performance &
+Benchmarks" tables. Reproduce with the command at the top of this file. Representative
+medians (AMD Ryzen 7 5700G, Windows, Go, `-count=6`):
+
+| Path | Result |
+|---|---|
+| `SyncEmit` · 1 listener | ~8 ns · 0 allocs |
+| `SyncEmit` · 10 listeners | ~33 ns · 0 allocs |
+| `SyncEmit` · concurrent (16 threads) | ~1.1 ns · 0 allocs |
+| `SyncTryEmit` · 1 listener | ~9 ns · 0 allocs |
+| `SyncEmit` · error → `OnError` | ~16 ns · 0 allocs |
+| `Emit` (async dispatch) · 1 listener | ~230 ns · 208 B · 2 allocs |
+| `Emit` (async dispatch) · 100 listeners | ~24 µs · ~12 KB · ~95 allocs |
+| `TryEmit` (async, waited) · 10 listeners | ~4 µs · 1.5 KB · 12 allocs |
+| `TryEmit` (async, bounded `MaxConcurrent=4`) · 10 listeners | ~6 µs · 1.5 KB · 12 allocs |
+| Add/Remove churn (~1000 listeners, concurrent) | ~23 µs · ~82 KB · 5 allocs |
+
+The async **bounded** `TryEmit` is *slower* than unbounded (~6 µs vs ~4 µs) — the
+counting-semaphore bound is a safety valve to protect a slow downstream dependency,
+**not** a throughput optimization. Async `Emit` numbers are **dispatch rate**
+(goroutine-per-listener scheduling), not listener completion.
+
