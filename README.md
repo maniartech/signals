@@ -6,25 +6,25 @@
 fire-and-forget async signals and error-aware sync signals. It favors
 simple APIs, context propagation, and predictable concurrency behavior.
 
-> ⚠️ **Breaking change (v1.4.0):** `AsyncSignal.Emit` is now truly
+> **Breaking change (v1.4.0):** `AsyncSignal.Emit` is now truly
 > fire-and-forget — it schedules listeners and **returns immediately** instead
 > of waiting for them. This is a *silent runtime* change (your code still
 > compiles). **If you relied on the old blocking behavior, switch
-> `Emit` → `TryEmit`.** See [Migration Note](#-migration-note-async-emit-semantics).
+> `Emit` → `TryEmit`.** See [Migration Note](#migration-note-async-emit-semantics).
 
 ## Key Features
 
-- 🧭 **Two Signal Types**: Async for fire-and-forget, Sync for error-aware workflows
-- 🛡️ **Context-Aware**: All listeners receive context for cancellation and timeouts
-- 🚨 **Error Handling**: `TryEmit` (sync: stop-on-first-error; async: `errors.Join` of all) and `OnError` sinks on the best-effort `Emit` path
-- ⚡ **Lock-Free Reads**: Copy-on-write core — `Emit` is a single atomic load, no lock or allocation on the read path
-- 🔒 **Thread-Safe**: Safe for concurrent Add/Remove/Emit, proven under `-race` with property + fuzz + stress tests
-- 🎯 **Rich Subscriptions**: `AddOnce`/`AddOnceWithErr` one-shots, `AddListenerWithCancel`/`AddOnceWithCancel` handle-based teardown, plus `Keys`/`HasKey` introspection
-- 🚦 **Bounded Async Dispatch**: opt-in `MaxConcurrent` counting-semaphore safety valve (unbounded by default)
-- 🧰 **Zero-Value Usable**: Zero-value signals can be used without explicit initialization
-- 📦 **Zero Dependencies**: Pure Go, no external dependencies
+- **Two Signal Types**: Async for fire-and-forget, Sync for error-aware workflows
+- **Context-Aware**: All listeners receive context for cancellation and timeouts
+- **Error Handling**: `TryEmit` (sync: stop-on-first-error; async: `errors.Join` of all) and `OnError` sinks on the best-effort `Emit` path
+- **Lock-Free Reads**: Copy-on-write core — `Emit` is a single atomic load, no lock or allocation on the read path
+- **Thread-Safe**: Safe for concurrent Add/Remove/Emit, proven under `-race` with property + fuzz + stress tests
+- **Rich Subscriptions**: `AddOnce`/`AddOnceWithErr` one-shots, `AddListenerWithCancel`/`AddOnceWithCancel` handle-based teardown, plus `Keys`/`HasKey` introspection
+- **Bounded Async Dispatch**: opt-in `MaxConcurrent` counting-semaphore safety valve (unbounded by default)
+- **Zero-Value Usable**: Zero-value signals can be used without explicit initialization
+- **Zero Dependencies**: Pure Go, no external dependencies
 
-✅ **Production-Ready**: Used by [ManiarTech®](https://maniartech.com) and other companies in mission-critical applications.
+**Production-Ready**: Used by [ManiarTech®](https://maniartech.com) and other companies in mission-critical applications.
 
 [![GoReportCard example](https://goreportcard.com/badge/github.com/nanomsg/mangos)](https://goreportcard.com/report/github.com/maniartech/signals)
 [![<ManiarTech®>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
@@ -74,12 +74,12 @@ var EmailSent = signals.New[string]()
 func main() {
     // Add listeners for user registration
     UserRegistered.AddListener(func(ctx context.Context, user User) {
-        fmt.Printf("📧 Sending welcome email to %s\n", user.Name)
+        fmt.Printf("Sending welcome email to %s\n", user.Name)
         EmailSent.Emit(ctx, user.Name)
     })
 
     UserRegistered.AddListener(func(ctx context.Context, user User) {
-        fmt.Printf("📊 Adding user %s to analytics\n", user.Name)
+        fmt.Printf("Adding user %s to analytics\n", user.Name)
     })
 
     // Emit user registration event
@@ -113,7 +113,7 @@ var OrderProcessed = signals.NewSync[Order]()
 func main() {
     // Add error-returning listeners for critical operations
     OrderProcessed.AddListenerWithErr(func(ctx context.Context, order Order) error {
-        fmt.Printf("💳 Processing payment for order %d\n", order.ID)
+        fmt.Printf("Processing payment for order %d\n", order.ID)
         if order.Amount > 10000 {
             return errors.New("payment declined: amount too high")
         }
@@ -121,7 +121,7 @@ func main() {
     })
 
     OrderProcessed.AddListenerWithErr(func(ctx context.Context, order Order) error {
-        fmt.Printf("📦 Creating shipping label for order %d\n", order.ID)
+        fmt.Printf("Creating shipping label for order %d\n", order.ID)
         return nil // Success
     })
 
@@ -132,10 +132,10 @@ func main() {
     order := Order{ID: 123, Amount: 15000, UserID: 456}
 
     if err := OrderProcessed.TryEmit(ctx, order); err != nil {
-        fmt.Printf("❌ Order processing failed: %v\n", err)
+        fmt.Printf("Order processing failed: %v\n", err)
         // Rollback transaction, notify user, etc.
     } else {
-        fmt.Printf("✅ Order %d processed successfully\n", order.ID)
+        fmt.Printf("Order %d processed successfully\n", order.ID)
     }
 }
 ```
@@ -339,7 +339,7 @@ go func() {
 }()
 ```
 
-## ⚠️ Migration Note: Async `Emit` Semantics
+## Migration Note: Async `Emit` Semantics
 
 `AsyncSignal.Emit` is now truly fire-and-forget: it schedules each listener
 in its own goroutine and returns immediately. In earlier releases, `Emit`
