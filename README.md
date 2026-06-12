@@ -24,10 +24,10 @@ simple APIs, context propagation, and predictable concurrency behavior.
 - 🧰 **Zero-Value Usable**: Zero-value signals can be used without explicit initialization
 - 📦 **Zero Dependencies**: Pure Go, no external dependencies
 
-✅ **Production-Ready**: Used by [ManiarTech®️](https://maniartech.com) and other companies in mission-critical applications.
+✅ **Production-Ready**: Used by [ManiarTech®](https://maniartech.com) and other companies in mission-critical applications.
 
 [![GoReportCard example](https://goreportcard.com/badge/github.com/nanomsg/mangos)](https://goreportcard.com/report/github.com/maniartech/signals)
-[![<ManiarTech®️>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
+[![<ManiarTech®>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
 [![made-with-Go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg)](https://go.dev/)
 [![GoDoc reference example](https://img.shields.io/badge/godoc-reference-blue.svg)](https://godoc.org/github.com/maniartech/signals)
 
