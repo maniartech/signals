@@ -2,8 +2,8 @@
 
 **Family:** Reliability
 · **Also Known As:** Error Sink, Out-of-Band Error Handler
-· **Status:** 🔜 v1.4 — `OnError` (on **both** sync and async signals) and
-  error-returning listeners (`AddListenerWithErr`) land in v1.4
+· **Status:** ✅ shipped — `OnError` (on **both** sync and async signals) and
+  error-returning listeners (`AddListenerWithErr`) ship in v1.4
 
 ## Intent
 
@@ -44,18 +44,18 @@ routed to a global handler instead of crashing the process. A **returned error f
 async listener is the same shape of problem** — a failure with no caller to catch it —
 and it deserves the same solution: route it out-of-band to a registered sink.
 
-`OnError` (🔜 v1.4) provides that sink. Make the listener error-returning
-(`AddListenerWithErr`, 🔜 v1.4), and register a handler:
+`OnError` (✅) provides that sink. Make the listener error-returning
+(`AddListenerWithErr`, ✅), and register a handler:
 
 ```go
 var UserRegistered = signals.New[User]()
 
 UserRegistered.AddListenerWithErr(func(ctx context.Context, u User) error {
-    return mailer.SendWelcome(ctx, u.Email) // 🔜 v1.4 — error now goes somewhere
+    return mailer.SendWelcome(ctx, u.Email) // ✅ — error now goes somewhere
 }, "welcome-email")
 
 // Per-signal error sink. Called out-of-band whenever a listener returns non-nil.
-UserRegistered.OnError(func(ctx context.Context, err error) { // 🔜 v1.4
+UserRegistered.OnError(func(ctx context.Context, err error) { // ✅
     log.Error("welcome email failed", "err", err)
     metrics.Inc("welcome_email.failures")
 })
@@ -120,8 +120,8 @@ ever having to wait for it.
 |-------------|----------------|
 | **Producer (Emitter)** | Calls `Emit`; returns immediately; is *gone* before any failure occurs |
 | **AsyncSignal** | Dispatches listeners detached; routes a listener's returned error to `OnError` |
-| **Error-returning listener** | `SignalListenerErr[T]` added via `AddListenerWithErr` (🔜 v1.4); returns the failure |
-| **Error sink(s) (`OnError`)** | Per-signal handler(s) `func(ctx, err)` on **both** sync and async signals; **multiple may be registered** (additive), each logs/meters/alerts out-of-band (🔜 v1.4) |
+| **Error-returning listener** | `SignalListenerErr[T]` added via `AddListenerWithErr` (✅); returns the failure |
+| **Error sink(s) (`OnError`)** | Per-signal handler(s) `func(ctx, err)` on **both** sync and async signals; **multiple may be registered** (additive), each logs/meters/alerts out-of-band (✅) |
 | **Panic handler** | Separate, *global* sink for panics — the same out-of-band idea for bugs (see [Panic Isolation](panic-isolation.md)) |
 
 ## Collaborations
@@ -173,7 +173,7 @@ ever having to wait for it.
 
 ## Implementation
 
-1. **The listener must be error-returning.** Use `AddListenerWithErr` (🔜 v1.4)
+1. **The listener must be error-returning.** Use `AddListenerWithErr` (✅)
    with a `SignalListenerErr[T]`. A plain `AddListener` listener returns
    nothing, so `OnError` can never fire for it — there is no error to route.
 
@@ -183,8 +183,8 @@ ever having to wait for it.
    fail.
 
 3. **Keep the `OnError` handler cheap and non-blocking.** It runs on the listener's
-   goroutine, off the hot path, but a slow handler still ties up a worker and can mask
-   throughput. Increment an atomic counter, log structured fields, or push to a
+   goroutine, off the hot path, but a slow handler still ties up that goroutine (and,
+   under a `MaxConcurrent` bound, its semaphore slot) and can mask throughput. Increment an atomic counter, log structured fields, or push to a
    buffered alerting client — never do unbounded I/O or acquire a contended lock
    inside it.
 
@@ -206,7 +206,7 @@ ever having to wait for it.
 
 7. **Register one sink or several — they are additive.** `OnError` supports **multiple
    registrations** on the same signal; every registered sink is invoked with each error
-   (🔜 v1.4). Register a dedicated sink per concern (logging, metrics, alerting), or fan
+   (✅). Register a dedicated sink per concern (logging, metrics, alerting), or fan
    out inside a single handler — both are valid. Keep each sink cheap and non-blocking,
    since they all run per failure.
 
@@ -229,14 +229,14 @@ mechanics; the practical examples then apply it to real problems.
 // 1. ASYNC SIGNAL — fire-and-forget; Emit returns before listeners finish.
 sig := signals.New[Job]()
 
-// 2. ERROR-RETURNING LISTENER (🔜 v1.4) — may fail with NO caller waiting.
+// 2. ERROR-RETURNING LISTENER (✅) — may fail with NO caller waiting.
 sig.AddListenerWithErr(func(ctx context.Context, j Job) error {
     return doWork(ctx, j) // returns later, when the Emit caller is long gone
 }, "worker")
 
 // 3. ERROR SINK — the out-of-band route for a failure that has no return path.
 //    Cheap & non-blocking. Register ONCE at wiring time, before the first Emit.
-sig.OnError(func(ctx context.Context, err error) { // 🔜 v1.4
+sig.OnError(func(ctx context.Context, err error) { // ✅
     failures.Add(1)                  // count — never silent
     log.Error("job failed", "err", err)
 })
@@ -283,7 +283,7 @@ var (
 func Init(mailer Mailer, hooks WebhookClient, dlq RetryQueue) {
     notifications = signals.New[Event]()
 
-    // Error-returning listeners (🔜 v1.4). Each may fail with no caller waiting.
+    // Error-returning listeners (✅). Each may fail with no caller waiting.
     notifications.AddListenerWithErr(func(ctx context.Context, e Event) error {
         if err := mailer.Send(ctx, e.UserID, e.Payload); err != nil {
             return fmt.Errorf("email to %s: %w", e.UserID, err) // wrap with identity
@@ -298,7 +298,7 @@ func Init(mailer Mailer, hooks WebhookClient, dlq RetryQueue) {
         return nil
     }, "webhook")
 
-    // The out-of-band error sink (🔜 v1.4): cheap, non-blocking, visible.
+    // The out-of-band error sink (✅): cheap, non-blocking, visible.
     notifications.OnError(func(ctx context.Context, err error) {
         deliverFailures.Add(1)
         slog.ErrorContext(ctx, "notification delivery failed", "err", err)
@@ -365,7 +365,7 @@ var (
 func Init(index SearchIndex, retries RetryQueue) {
     productEdited = signals.New[ProductChanged]()
 
-    // Error-returning listener (🔜 v1.4): re-index off the request path.
+    // Error-returning listener (✅): re-index off the request path.
     productEdited.AddListenerWithErr(func(ctx context.Context, c ProductChanged) error {
         if err := index.Upsert(ctx, c.ProductID, c.Revision); err != nil {
             // Wrap with identity so the sink can reconstruct what to retry.
@@ -374,7 +374,7 @@ func Init(index SearchIndex, retries RetryQueue) {
         return nil
     }, "search-index")
 
-    // Out-of-band sink (🔜 v1.4): log, count, and schedule a retry — bounded.
+    // Out-of-band sink (✅): log, count, and schedule a retry — bounded.
     productEdited.OnError(func(ctx context.Context, err error) {
         indexFailures.Add(1)
         slog.ErrorContext(ctx, "search reindex failed", "err", err)

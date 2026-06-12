@@ -184,8 +184,8 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
 
 1. **Construct with `New[T]()`** (✅) — the same `AsyncSignal` used for fire-and-forget;
    the dispatch mode is chosen by *which method you call*, not by a different
-   constructor. `NewWithOptions[T]` (✅) adds `InitialCapacity`/`GrowthFunc` and, 🔜 v1.4,
-   `MaxConcurrent`.
+   constructor. `NewWithOptions[T]` (✅) adds `InitialCapacity`/`GrowthFunc` and
+   `MaxConcurrent` (✅).
 
 2. **Always pass a context with a deadline.** Because the caller waits for the slowest
    listener, a single hung listener blocks `TryEmit` indefinitely unless bounded.
@@ -204,9 +204,9 @@ The customer now waits ~60ms (the *slowest* listener, payment) instead of 150ms 
 
 4. **Bound the fan-out for high-fan-in signals.** A signal with many listeners spawns many
    goroutines per emit. For large listener counts or high emit rates, set `MaxConcurrent`
-   (🔜 v1.4) so the concurrent fan-out is capped — see
+   (✅) so the concurrent fan-out is capped — see
    [Bounded Concurrency](../flow-control/bounded-concurrency.md). The completion guarantee
-   still holds; the work is just throttled through the pool.
+   still holds; the work is just throttled through the semaphore.
 
 5. **Panics are recovered and routed.** A listener panic is caught (the barrier still
    releases) and sent to the handler registered with `signals.SetPanicHandler` (✅). Set it
@@ -420,7 +420,7 @@ canceled by the signal, so the drain needs its own bounded budget.
   [Result Aggregation](../reliability/result-aggregation.md).
 - **Error-ignoring join.** Want "wait for all but ignore failures"? Same `TryEmit`, discard
   the return: `_ = sig.TryEmit(ctx, x)`.
-- **Bounded fan-out.** Cap the concurrent listeners with `MaxConcurrent` (🔜 v1.4) for
+- **Bounded fan-out.** Cap the concurrent listeners with `MaxConcurrent` (✅) for
   high-fan-in signals while keeping the completion guarantee —
   [Bounded Concurrency](../flow-control/bounded-concurrency.md).
 - **Deadline-bounded barrier.** Wrap with `context.WithTimeout` so the join releases on a

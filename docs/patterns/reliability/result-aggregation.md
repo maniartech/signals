@@ -2,8 +2,8 @@
 
 **Family:** Reliability
 · **Also Known As:** Error Join, Gather-Errors
-· **Status:** 🔜 v1.4 — async `TryEmit` and error-returning listeners
-  (`AddListenerWithErr`) land in v1.4
+· **Status:** ✅ shipped — async `TryEmit` and error-returning listeners
+  (`AddListenerWithErr`) ship in v1.4
 
 ## Intent
 
@@ -45,7 +45,7 @@ but you threw the truth away.
 You could give each listener its own goroutine, error channel, and `sync.WaitGroup` by
 hand — but that is exactly the concurrency boilerplate (and the bugs that come with it)
 that a signal exists to remove. Result Aggregation packages it: make the listeners
-error-returning (`AddListenerWithErr`, 🔜 v1.4) and emit with **`TryEmit`** (🔜 v1.4 on
+error-returning (`AddListenerWithErr`, ✅) and emit with **`TryEmit`** (✅ on
 async), which fans out, waits for all, and returns the `errors.Join` of every failure:
 
 ```go
@@ -54,7 +54,7 @@ Alert.AddListenerWithErr(postSlack, "slack")
 Alert.AddListenerWithErr(triggerPagerDuty, "pagerduty")
 Alert.AddListenerWithErr(sendEmail, "email")
 
-if err := Alert.TryEmit(ctx, incident); err != nil { // 🔜 v1.4
+if err := Alert.TryEmit(ctx, incident); err != nil { // ✅
     // err is the errors.Join of EVERY channel that failed — all of them, not just the first.
     log.Error("alert partially failed", "err", err)
     // Inspect and retry only the channels that failed:
@@ -117,7 +117,7 @@ or retry **just that channel**.
 |-------------|----------------|
 | **Caller (Emitter)** | Calls async `TryEmit`; **blocks** until all listeners finish; receives the joined error |
 | **AsyncSignal** | Fans listeners out concurrently, waits for all, joins their errors with `errors.Join` |
-| **Error-returning listeners** | `SignalListenerErr[T]` via `AddListenerWithErr` (🔜 v1.4); each runs independently, returns `nil` or an error |
+| **Error-returning listeners** | `SignalListenerErr[T]` via `AddListenerWithErr` (✅); each runs independently, returns `nil` or an error |
 | **Joined error** | The single `error` returned — `errors.Join` of all non-nil results; inspectable with `errors.Is`/`errors.As` |
 | **Context** | Cancellation/deadline bound on the whole fan-out |
 
@@ -168,7 +168,7 @@ or retry **just that channel**.
 
 ## Implementation
 
-1. **Listeners must be error-returning.** Use `AddListenerWithErr` (🔜 v1.4).
+1. **Listeners must be error-returning.** Use `AddListenerWithErr` (✅).
    A plain `AddListener` listener returns nothing and cannot contribute to the joined
    error — its failures are invisible to `TryEmit`.
 
@@ -203,9 +203,9 @@ or retry **just that channel**.
    thread-safe.
 
 7. **Concurrency may be bounded.** When the signal is configured with a
-   `MaxConcurrent` (🔜 v1.4, see [Bounded Concurrency](../flow-control/bounded-concurrency.md)),
-   listeners still all run and are still all awaited — the pool just limits how many run
-   at the same instant. Aggregation semantics are unchanged; only the scheduling is.
+   `MaxConcurrent` (✅, see [Bounded Concurrency](../flow-control/bounded-concurrency.md)),
+   listeners still all run and are still all awaited — the semaphore just limits how many
+   run at the same instant. Aggregation semantics are unchanged; only the scheduling is.
 
 8. **Errors vs. panics.** Async `TryEmit` aggregates *returned errors*. A listener that
    *panics* is recovered and routed to the global panic handler
@@ -226,7 +226,7 @@ mechanics; the practical examples then apply it to real problems.
 // 1. ASYNC SIGNAL — listeners will run CONCURRENTLY (no ordering guarantee).
 sig := signals.New[Task]()
 
-// 2. ERROR-RETURNING LISTENERS (🔜 v1.4) — independent; each returns nil or
+// 2. ERROR-RETURNING LISTENERS (✅) — independent; each returns nil or
 //    an error. One listener's failure does NOT stop the others. Wrap with identity
 //    so the joined error tells you WHICH target failed.
 sig.AddListenerWithErr(func(ctx context.Context, t Task) error {
@@ -237,7 +237,7 @@ sig.AddListenerWithErr(func(ctx context.Context, t Task) error {
 }, "target-b")
 
 // 3. CALLER — async TryEmit fans out, WAITS for all, returns errors.Join of failures.
-err := sig.TryEmit(ctx, t) // 🔜 v1.4
+err := sig.TryEmit(ctx, t) // ✅
 //   ├─ all listeners start concurrently
 //   ├─ EVERY listener runs to completion (no stop-on-first-error)
 //   ├─ wait for all to finish
@@ -288,7 +288,7 @@ var alert *signals.AsyncSignal[Incident]
 func Init(slack SlackClient, pager PagerDutyClient, mail Mailer) {
     alert = signals.New[Incident]()
 
-    alert.AddListenerWithErr(func(ctx context.Context, in Incident) error { // 🔜 v1.4
+    alert.AddListenerWithErr(func(ctx context.Context, in Incident) error { // ✅
         if err := slack.Post(ctx, in.Service, in.Summary); err != nil {
             return fmt.Errorf("%w: %v", ErrSlackDown, err) // identifiable per target
         }
@@ -315,7 +315,7 @@ func Page(ctx context.Context, in Incident) error {
     ctx, cancel := context.WithTimeout(ctx, 5*time.Second) // bound the slowest listener
     defer cancel()
 
-    err := alert.TryEmit(ctx, in) // 🔜 v1.4 — errors.Join of all failures
+    err := alert.TryEmit(ctx, in) // ✅ — errors.Join of all failures
     if err == nil {
         return nil // every channel delivered
     }
@@ -388,7 +388,7 @@ func Init(replicas []Replica) {
     for _, r := range replicas {
         r := r // capture per iteration
         sentinel := regionErr[r.Region]
-        replicate.AddListenerWithErr(func(ctx context.Context, rec Record) error { // 🔜 v1.4
+        replicate.AddListenerWithErr(func(ctx context.Context, rec Record) error { // ✅
             if err := r.Client.Put(ctx, rec.Key, rec.Value); err != nil {
                 return fmt.Errorf("%w: %v", sentinel, err) // identifiable per replica
             }
@@ -402,7 +402,7 @@ func Write(ctx context.Context, rec Record) error {
     ctx, cancel := context.WithTimeout(ctx, 3*time.Second) // bound the slowest replica
     defer cancel()
 
-    err := replicate.TryEmit(ctx, rec) // 🔜 v1.4 — errors.Join of all failures
+    err := replicate.TryEmit(ctx, rec) // ✅ — errors.Join of all failures
     if err == nil {
         return nil // every replica acknowledged
     }

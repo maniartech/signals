@@ -204,7 +204,7 @@ That decoupling is not free, and the cost is the whole point of the next section
 ## Implementation
 
 1. **Construct with `New[T]()`** (✅) — or `NewWithOptions[T]` (✅) to set
-   `InitialCapacity`/`GrowthFunc`, and (🔜 v1.4) `MaxConcurrent` to bound the
+   `InitialCapacity`/`GrowthFunc`, and `MaxConcurrent` (✅) to bound the
    concurrency. The zero value `var s signals.AsyncSignal[T]` is usable directly (lazy
    `sync.Once` init). `New[T]()` is **unbounded** — the safe correctness default.
 
@@ -212,7 +212,7 @@ That decoupling is not free, and the cost is the whole point of the next section
    correct choice for most signals, including long-running listeners (a bound can *starve*
    them — only `MaxConcurrent` run, the rest never start). For a high-rate stream of
    *short* listeners where you want a ceiling on concurrent execution, set `MaxConcurrent`
-   (🔜 v1.4); `DefaultMaxConcurrent()` (🔜 v1.4, `2*NumCPU`) is the recommended value but
+   (✅); `DefaultMaxConcurrent()` (✅, `2*NumCPU`) is the recommended value but
    is **not** applied automatically. When the bound is hit, excess handlers **park** until
    a slot frees — they are **not dropped** and the caller is **never blocked**. See
    [Bounded Concurrency](../flow-control/bounded-concurrency.md) for the starvation and
@@ -238,9 +238,9 @@ That decoupling is not free, and the cost is the whole point of the next section
    panics are logged/counted, not lost — see
    [Panic Isolation](../reliability/panic-isolation.md). The caller never sees the panic.
 
-6. **Errors need an explicit sink.** `SignalListenerErr[T]` may be added (🔜 v1.4 on
-   async via `AddListenerWithErr`); on the fire-and-forget `Emit` path the returned error is
-   routed to every registered `OnError` (🔜 v1.4) callback — see
+6. **Errors need an explicit sink.** `SignalListenerErr[T]` may be added (✅, via
+   `AddListenerWithErr`); on the fire-and-forget `Emit` path the returned error is
+   routed to every registered `OnError` (✅) callback — see
    [Async Error Routing](../reliability/async-error-routing.md). Keep error counts (ran,
    failed) separate from panic counts (ran, panicked).
 
@@ -322,7 +322,7 @@ type PageView struct {
 // Bounded async signal: high-rate, short listeners; the bound caps CONCURRENT handlers.
 // Excess handlers park (no drop, no caller-block) until a slot frees.
 var PageViewed = signals.NewWithOptions[PageView](&signals.SignalOptions{
-    MaxConcurrent: 8 * runtime.NumCPU(), // 🔜 v1.4 — ceiling on CONCURRENT listeners
+    MaxConcurrent: 8 * runtime.NumCPU(), // ✅ — ceiling on CONCURRENT listeners
 })
 
 func init() {
@@ -396,7 +396,7 @@ type Invalidation struct {
 
 // Bounded async signal: busts are best-effort (TTL backstops a delayed one).
 var Invalidated = signals.NewWithOptions[Invalidation](&signals.SignalOptions{
-    MaxConcurrent: 4 * runtime.NumCPU(), // 🔜 v1.4 — ceiling on CONCURRENT busts
+    MaxConcurrent: 4 * runtime.NumCPU(), // ✅ — ceiling on CONCURRENT busts
 })
 
 func init() {
@@ -434,13 +434,13 @@ meantime — which is exactly what makes this a fire-and-forget fit rather than 
 ## Variations
 
 - **Bounded fire-and-forget.** Same non-blocking `Emit`, but with `MaxConcurrent`
-  (🔜 v1.4) capping *concurrent* handlers; excess parks (no drop) — see
+  (✅) capping *concurrent* handlers; excess parks (no drop) — see
   [Bounded Concurrency](../flow-control/bounded-concurrency.md). Use deliberately:
   unbounded is the safe default, and a bound can starve long-running listeners.
 - **Fire-and-forget with a drop/block/error overflow policy.** A hard backlog cap that
   sheds (and counts), blocks, or errors instead of parking — **🔭 post-v1.4**, an opt-in
   documented under [Load Shedding](../flow-control/load-shedding.md). Not the v1.4 default.
-- **Fire-and-forget with error routing.** Add `OnError` (🔜 v1.4) to learn about
+- **Fire-and-forget with error routing.** Add `OnError` (✅) to learn about
   failures without blocking the caller —
   [Async Error Routing](../reliability/async-error-routing.md).
 - **Detached-context fire-and-forget.** Derive a context that outlives the request when

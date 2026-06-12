@@ -262,7 +262,9 @@ points at nobody.
 6. **Reset between tests.** Because the registry is global mutable state, a test that
    adds a listener must remove it (`RemoveListener(key)`) or clear the signal
    (`Reset()`) in cleanup, or later tests will see stray handlers. Prefer per-test
-   unique keys plus `t.Cleanup(func(){ events.X.RemoveListener(key) })`.
+   unique keys plus `t.Cleanup(func(){ events.X.RemoveListener(key) })` — or skip the
+   key entirely: `cancel := events.X.AddListenerWithCancel(h)` plus `t.Cleanup(cancel)`
+   removes exactly that listener with no name to invent.
 
 7. **The zero-value works, but name your signals explicitly.** `var X
    signals.AsyncSignal[T]` is usable without a constructor (lazy init), but in a

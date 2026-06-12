@@ -2,7 +2,7 @@
 
 **Family:** Subscription Lifecycle
 · **Also Known As:** Once Listener, Self-Unsubscribing Handler
-· **Status:** 🔜 v1.4 (`AddOnce`, `AddOnceWithErr`)
+· **Status:** ✅ shipped (`AddOnce`, `AddOnceWithErr`, `AddOnceWithCancel`)
 
 ## Intent
 
@@ -48,7 +48,7 @@ One-Shot Subscription puts the guarantee in the library:
 ```go
 func armMigration() {
     // Fires exactly once, even under simultaneous emits; then removes itself.
-    Connected.AddOnce(func(ctx context.Context, c Conn) { // 🔜 v1.4
+    Connected.AddOnce(func(ctx context.Context, c Conn) {
         runMigration(ctx, c)
     })
 }
@@ -76,9 +76,10 @@ duplicate migration, no hand-rolled flag, no race.
   [Keyed Subscription](keyed-subscription.md) (or anonymous `AddListener`).
 - You need the listener to fire a **bounded number > 1** of times — one-shot is
   exactly one; for N-times you must track a counter yourself.
-- You need to remove the listener **before** it ever fires under a known name →
-  pass a key to `AddOnce` so you retain a handle for early cancellation
-  (e.g. `AddOnce(handler, key)`).
+- You need to remove the listener **before** it ever fires → use
+  `AddOnceWithCancel(handler)` and keep the returned canceller, or — when the
+  one-shot must be addressable by *name* across modules — pass a key to `AddOnce`
+  and call `RemoveListener(key)`.
 
 ## Structure
 
@@ -108,11 +109,12 @@ duplicate migration, no hand-rolled flag, no race.
 | Participant | Responsibility |
 |-------------|----------------|
 | **Producer (Emitter)** | Emits the recurring event, possibly concurrently |
-| **`AddOnce`** (🔜 v1.4) | Registers the handler wrapped in a one-shot guard; takes an optional key |
-| **One-shot guard** | An atomic flag claimed by the first emit; makes "fire once" race-safe |
+| **`AddOnce`** | Registers the handler wrapped in a one-shot guard; takes an optional key |
+| **`AddOnceWithCancel`** | Same one-shot guard, but returns an idempotent canceller that can remove the pending one-shot — and that *wins* against an in-flight fire |
+| **One-shot guard** | An atomic flag claimed by the first emit (or by a winning cancel); makes "fire once" race-safe |
 | **Wrapped handler** | The user's logic; invoked by exactly one emit |
 | **Signal** | Removes the wrapped listener after it has fired |
-| **Key** (optional) | Passed to keyed `AddOnce`; lets the one-shot listener also be removed *before* it fires |
+| **Key** (optional) | Names the one-shot so it can also be removed *before* it fires via `RemoveListener` |
 
 ## Collaborations
 
@@ -140,8 +142,10 @@ duplicate migration, no hand-rolled flag, no race.
   leak from a listener that has outlived its purpose.
 - ✓ **Intent is explicit.** `AddOnce` states "this runs once" at the call site, where a
   reader can see it — far clearer than a hidden flag.
-- ✓ **Composes with keys.** A keyed `AddOnce` keeps a handle so the one-shot can also be
-  cancelled *before* it fires.
+- ✓ **Cancellable while pending.** `AddOnceWithCancel` returns a canceller that removes
+  an armed-but-unfired one-shot; a keyed `AddOnce` offers the same via `RemoveListener`.
+  The canceller is stronger: a cancel that wins the race against an in-flight emission
+  guarantees the handler never runs.
 
 **Liabilities**
 
@@ -151,7 +155,8 @@ duplicate migration, no hand-rolled flag, no race.
   the single fire is whichever emit wins the guard — do not assume it's the first by
   wall-clock time.
 - ✗ **No built-in timeout.** "The next time X happens" waits indefinitely; if X never
-  happens, the listener sits armed forever. Pair with a key so you can cancel it.
+  happens, the listener sits armed forever. Use `AddOnceWithCancel` (or a key) so you
+  can abandon the wait — see the await-with-abandon example below.
 
 ## Implementation
 
@@ -168,29 +173,41 @@ duplicate migration, no hand-rolled flag, no race.
    N times before any removal takes effect. The library's guard closes this window by
    gating on execution, not on registration.
 
-3. **Unkeyed vs keyed `AddOnce`.** `AddOnce(handler)` is anonymous: fire-once-then-vanish
-   with no handle. Passing a key — `AddOnce(handler, key)` — assigns a name so you can
-   `RemoveListener(key)` to cancel the one-shot *before* it ever fires (e.g. on shutdown
-   while still waiting for the event); the key also dedup's the registration. Prefer the
-   keyed form whenever the armed listener might need to be torn down early — see
+3. **Three registration forms: unkeyed, keyed, and `WithCancel`.** `AddOnce(handler)`
+   is anonymous: fire-once-then-vanish with no handle. Passing a key —
+   `AddOnce(handler, key)` — assigns a name so any module can `RemoveListener(key)` to
+   cancel the one-shot before it fires; the key also dedup's the registration. And
+   `AddOnceWithCancel(handler)` returns an idempotent canceller func — the handle-based
+   form for a one-shot armed and abandoned by the *same* code, with no key to invent
+   (a duplicate caller key adds nothing and yields a no-op canceller). Prefer
+   `WithCancel` for scoped waits, a key for cross-module addressability — see
    [Keyed Subscription](keyed-subscription.md).
 
-4. **The handler runs under the dispatch semantics of its signal.** On an
+4. **The `WithCancel` canceller is strictly stronger than `RemoveListener`.**
+   `RemoveListener` only affects *subsequent* emits: an emission already in flight has
+   snapshotted the listener and may still run it. The canceller from `AddOnceWithCancel`
+   closes that window — it flips the *same atomic fired-guard* the one-shot uses, so a
+   cancel that wins the race against an in-flight fire makes the handler's CAS fail and
+   **guarantees the handler does not run**. Either the handler fired or the cancel won;
+   never both, never a half-state. Calling the canceller after the fire, or calling it
+   repeatedly, is a safe no-op.
+
+5. **The handler runs under the dispatch semantics of its signal.** On an
    `AsyncSignal` the single fire runs concurrently with other listeners and its panics
    are recovered to the panic handler; on a `SyncSignal` it runs inline in registration
    order. One-shot governs *cardinality*, not *delivery mode* — all the usual dispatch
    and reliability rules still apply to that one execution.
 
-5. **Keep the once-handler self-contained.** Because it runs exactly once and then
+6. **Keep the once-handler self-contained.** Because it runs exactly once and then
    disappears, it should not assume it will see later state changes. If the work needs
    the *latest* value rather than the *first* triggering one, a one-shot is the wrong
    tool — use a durable listener.
 
-6. **Re-arming is explicit.** If you genuinely need "once per epoch," call `AddOnce`
+7. **Re-arming is explicit.** If you genuinely need "once per epoch," call `AddOnce`
    again at the start of each epoch. There is deliberately no auto-rearm; that keeps the
    exactly-once contract unambiguous.
 
-7. **Canceled context still gates the fire.** If `ctx.Err() != nil` at emit time, no
+8. **Canceled context still gates the fire.** If `ctx.Err() != nil` at emit time, no
    listener runs — including a one-shot — and the guard is *not* consumed, so the
    one-shot remains armed for a later, non-canceled emit. A cancelled emit does not
    "spend" the single fire.
@@ -201,7 +218,7 @@ duplicate migration, no hand-rolled flag, no race.
 
 A minimal skeleton that maps one-to-one onto the **Participants** and the
 **Structure** diagram above — the *Producer* emitting (possibly concurrently), the
-`AddOnce` registration (unkeyed or keyed) that wraps the handler in the *one-shot
+registration (unkeyed, keyed, or `WithCancel`) that wraps the handler in the *one-shot
 guard*, the single *winner* that runs the handler, and the *self-removal*. Read this
 first to see the mechanics; the practical examples then apply it to real problems.
 
@@ -210,15 +227,21 @@ first to see the mechanics; the practical examples then apply it to real problem
 sig := signals.New[Event]()
 
 // 2a. ANONYMOUS one-shot: fire once, then vanish. No handle.
-sig.AddOnce(func(ctx context.Context, e Event) { // 🔜 v1.4
+sig.AddOnce(func(ctx context.Context, e Event) {
     initOnce(e) // runs for exactly one emit, ever — even under simultaneous emits
 })
 
-// 2b. KEYED one-shot: same exactly-once guarantee, plus a handle so it can be
-//     cancelled BEFORE it ever fires (e.g. on shutdown while still waiting).
-sig.AddOnce(func(ctx context.Context, e Event) { // 🔜 v1.4
+// 2b. KEYED one-shot: same exactly-once guarantee, plus a NAME so any module can
+//     cancel it BEFORE it ever fires (e.g. on shutdown while still waiting).
+sig.AddOnce(func(ctx context.Context, e Event) {
     initOnce(e)
 }, "domain/once-on-first")
+
+// 2c. CANCELLABLE one-shot: same guarantee, plus an idempotent canceller HANDLE —
+//     no key to invent; the canceller even beats an in-flight fire if it wins.
+cancel := sig.AddOnceWithCancel(func(ctx context.Context, e Event) {
+    initOnce(e)
+})
 
 // 3. PRODUCER — emits, possibly from many goroutines at the same instant.
 sig.Emit(ctx, e)
@@ -226,8 +249,11 @@ sig.Emit(ctx, e)
 //   ├─ concurrent / later emits → see guard taken → skipped, no-op
 //   └─ emit with a CANCELED ctx → no listener runs, guard NOT consumed (still armed)
 
-// 4. EARLY CANCEL — only possible for the keyed form: remove before it fires.
-sig.RemoveListener("domain/once-on-first") // tear down an armed-but-unfired one-shot
+// 4. EARLY CANCEL — abandon a one-shot that hasn't fired yet:
+sig.RemoveListener("domain/once-on-first") // keyed form: affects subsequent emits only
+cancel() // WithCancel form: claims the SAME fired-guard, so a winning cancel
+//          guarantees the handler does not run, even against an in-flight emission.
+//          After-fire or repeated calls are safe no-ops.
 ```
 
 The atomic guard (step 3) is the heart of the pattern: it gates on *execution*, not
@@ -263,7 +289,7 @@ var Connected = signals.New[Conn]()
 // then removes itself. Even if the pool opens five connections simultaneously,
 // runMigration executes exactly once — the atomic guard admits a single winner.
 func ArmMigration(migrate func(context.Context, Conn) error) {
-    Connected.AddOnce(func(ctx context.Context, c Conn) { // 🔜 v1.4
+    Connected.AddOnce(func(ctx context.Context, c Conn) {
         if err := migrate(ctx, c); err != nil {
             // handle/log; the one-shot has already been consumed by this fire
         }
@@ -310,7 +336,7 @@ var Restocked = signals.New[Restock]()
 // restock of the same SKU does nothing. Keyed so the shopper can cancel the watch.
 func WatchOnce(shopperID, sku string, notify func(context.Context, string)) {
     key := fmt.Sprintf("restock-watch/%s/%s", shopperID, sku)
-    Restocked.AddOnce(func(ctx context.Context, r Restock) { // 🔜 v1.4
+    Restocked.AddOnce(func(ctx context.Context, r Restock) {
         if r.SKU != sku {
             return // not the SKU this shopper is waiting on
         }
@@ -329,6 +355,55 @@ here only the matching SKU should consume it. If a non-matching restock must not
 the single fire, re-arm inside the handler instead of returning (see Variations);
 this example accepts that the next restock of any kind triggers the check.
 
+### Practical Example 3 — Await with abandon: wait for the next event, or give up
+
+The capability unique to `AddOnceWithCancel`: turning "the next time X happens" into
+a **bounded** wait. The caller arms a one-shot that forwards the event to a channel,
+then `select`s between the event and `ctx.Done()`. If the context expires first, the
+canceller removes the pending one-shot — and because a winning cancel flips the same
+atomic fired-guard the one-shot uses, the handler is **guaranteed not to run** even
+if an emission was already in flight. No late write, no leaked armed listener.
+
+```go
+package gateway
+
+import (
+    "context"
+
+    "github.com/maniartech/signals"
+)
+
+type Ready struct{ Endpoint string }
+
+// Fires when the upstream reports readiness — which may be never.
+var UpstreamReady = signals.New[Ready]()
+
+// AwaitReady blocks until the next Ready event or ctx expires, whichever wins.
+func AwaitReady(ctx context.Context) (Ready, error) {
+    done := make(chan Ready, 1) // buffered: the handler never blocks dispatch
+
+    cancel := UpstreamReady.AddOnceWithCancel(func(_ context.Context, r Ready) {
+        done <- r
+    })
+    defer cancel() // fired already? safe no-op. Abandoning? removes the pending one-shot.
+
+    select {
+    case r := <-done:
+        return r, nil // the one-shot fired and self-removed
+    case <-ctx.Done():
+        // Give up waiting. The deferred cancel() claims the one-shot's fired-guard:
+        // if it wins the race against an in-flight emit, the handler never runs,
+        // so nothing is written to done after we return.
+        return Ready{}, ctx.Err()
+    }
+}
+```
+
+A plain `RemoveListener(key)` could not close this race — it only stops *subsequent*
+emits, so an in-flight emission could still run the handler after the caller had
+already returned. The canceller's guarantee is exactly what makes the abandon path
+airtight.
+
 **Contrast — the hand-rolled self-removal that double-fires under load:**
 
 ```go
@@ -345,9 +420,15 @@ reproduces under single-threaded testing.
 
 ## Variations
 
-- **Keyed one-shot (cancellable).** Pass a key to `AddOnce` (`AddOnce(handler, key)`)
-  when the armed listener might need early teardown (shutdown before the event ever
-  fires).
+- **Keyed one-shot (cancellable by name).** Pass a key to `AddOnce`
+  (`AddOnce(handler, key)`) when the armed listener must be cancellable from *another*
+  module via `RemoveListener(key)` (shutdown before the event ever fires).
+- **Handle-cancellable one-shot.** `cancel := sig.AddOnceWithCancel(handler)` when the
+  same code arms and may abandon the wait — no key to invent, idempotent canceller, and
+  a winning cancel guarantees the handler does not run even against an in-flight emit.
+- **Await-with-abandon.** Forward the one-shot's payload to a buffered channel and
+  `select` on it vs `ctx.Done()`; on timeout, the canceller removes the pending
+  one-shot race-free (Practical Example 3).
 - **Error-returning one-shot.** `AddOnceWithErr` is the error-returning one-shot — same
   fire-once semantics, but the handler returns an `error` that routes to `OnError` on
   `Emit` or is returned by `TryEmit`. It is "consumed on attempt": it fires and
@@ -375,10 +456,12 @@ reproduces under single-threaded testing.
 ## Related Patterns
 
 - **[Keyed Subscription](keyed-subscription.md)** — a keyed `AddOnce` combines one-shot
-  cardinality with a removable handle; keys are how you cancel an armed one-shot early.
+  cardinality with a *named* handle; keys are how another module cancels an armed
+  one-shot early. For same-scope cancellation, `AddOnceWithCancel` is the lighter tool.
 - **[Subscription Teardown](subscription-teardown.md)** — one-shot is *self*-teardown
-  for the single-fire case; the teardown pattern covers the general lifecycle. A
-  one-shot needs no manual cleanup precisely because it removes itself.
+  for the single-fire case; the teardown pattern covers the general lifecycle
+  (including the handle-vs-key choice for the `WithCancel` cancellers). A one-shot
+  needs no manual cleanup precisely because it removes itself.
 - **[Shared Event Registry](../architectural/shared-event-registry.md)** — a common
   home for one-shot listeners: many packages arm a single "first ready / first connect"
   reaction on a shared signal.

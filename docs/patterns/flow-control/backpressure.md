@@ -263,7 +263,7 @@ propagates upstream. Read this first; the practical examples then apply it.
 //    NOT from an overflow policy. `Overflow: OverflowBlock` is 🔭 post-v1.4 and is not
 //    needed here — TryEmit already throttles the producer.
 sig := signals.NewWithOptions[Record](&signals.SignalOptions{
-    MaxConcurrent: 8, // 🔜 v1.4 — optional: ≤ 8 in-flight handlers per emission
+    MaxConcurrent: 8, // ✅ — optional: ≤ 8 in-flight handlers per emission
 })
 
 // 2. LISTENER — the durable work. Its speed sets the pipeline's pace.
@@ -326,7 +326,7 @@ func Init(ledger Ledger, outbox Outbox) {
     // Backpressure comes from TryEmit in Publish (the producer waits per fill);
     // the bound just caps in-flight ledger writes. No overflow policy needed in v1.4.
     fills = signals.NewWithOptions[Trade](&signals.SignalOptions{
-        MaxConcurrent: 16, // 🔜 v1.4 — at most 16 ledger writes in flight
+        MaxConcurrent: 16, // ✅ — at most 16 ledger writes in flight
     })
 
     fills.AddListenerWithErr(func(ctx context.Context, t Trade) error {
@@ -409,7 +409,7 @@ func Init(store AuditStore) {
     // Backpressure comes from TryEmit in Ingest (the loop waits per entry);
     // the bound just caps in-flight audit writes. No overflow policy needed in v1.4.
     events = signals.NewWithOptions[OrderEvent](&signals.SignalOptions{
-        MaxConcurrent: 8, // 🔜 v1.4 — at most 8 audit writes in flight
+        MaxConcurrent: 8, // ✅ — at most 8 audit writes in flight
     })
 
     // Reentrancy caution: this listener must NOT emit back onto `events`, or it could

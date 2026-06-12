@@ -2,8 +2,8 @@
 
 **Family:** Subscription Lifecycle
 · **Also Known As:** Named Listener, Identified Subscription
-· **Status:** ✅ shipped (`AddListener` with a key, `RemoveListener`, keyed dedup);
-  the introspection helpers `HasKey` / `Keys` are 🔜 v1.4
+· **Status:** ✅ shipped (`AddListener` with a key, `RemoveListener`, keyed dedup,
+  and the introspection helpers `HasKey` / `Keys`)
 
 ## Intent
 
@@ -79,6 +79,21 @@ registers once: the second `AddListener` with an existing key is a no-op that re
 - You want a listener that **removes itself after one fire** → use
   [One-Shot Subscription](one-shot-subscription.md), which manages the lifecycle for
   you (though a keyed `AddOnce` (`AddOnce(h, key)`) lets you combine both).
+- The only reason you reached for a key is **removal by the same code that
+  registered** → see the note below; `AddListenerWithCancel` gives you a teardown
+  handle with no key at all.
+
+> **When a key is NOT needed.** If a listener is anonymous or scoped — a closure with
+> no natural name, registered and torn down by the same code — you don't have to
+> invent a key just to remove it. `AddListenerWithCancel(h)` (and its one-shot
+> sibling `AddOnceWithCancel`) returns an idempotent canceller func that removes
+> exactly that listener: `cancel := sig.AddListenerWithCancel(h); defer cancel()`.
+> Keys remain the right tool when the subscription must be **addressable by name
+> across modules** (registered here, removed there), needs **duplicate detection**
+> (the `-1` dedup), or should appear in **`Keys()`/`HasKey` introspection** —
+> `WithCancel` registrations without a caller key are deliberately hidden from
+> `Keys()`. See [Subscription Teardown](subscription-teardown.md) for the full
+> handle-vs-key decision guidance.
 
 ## Structure
 
@@ -111,7 +126,7 @@ registers once: the second `AddListener` with an existing key is a no-op that re
 | **Signal** | Maintains the keyed listener table; enforces key uniqueness (dedup) |
 | **`AddListener(h, key)`** | Inserts under `key`, or no-ops and returns `-1` if the key already exists |
 | **`RemoveListener(key)`** | Drops the listener under `key`; returns `-1` if no such key |
-| **`HasKey` / `Keys`** (🔜 v1.4) | Introspect the table: existence check / snapshot of all keys |
+| **`HasKey` / `Keys`** | Introspect the table: existence check / snapshot of all keys |
 
 ## Collaborations
 
@@ -124,7 +139,7 @@ registers once: the second `AddListener` with an existing key is a no-op that re
 4. On stop, the subscriber calls `RemoveListener(key)`. If the key was present its
    listener is removed and the new count is returned; if it was absent, `-1` signals
    "nothing to remove."
-5. (🔜 v1.4) Callers can ask `HasKey(key)` for an O(1) existence check, or `Keys()`
+5. Callers can ask `HasKey(key)` for an O(1) existence check, or `Keys()`
    for a snapshot of every registered key — useful for diagnostics and for building a
    replace-only-if-present flow without touching the count.
 
@@ -154,9 +169,11 @@ registers once: the second `AddListener` with an existing key is a no-op that re
 
 ## Implementation
 
-1. **Always key a listener you intend to remove or replace.** This is the core rule.
-   `RemoveListener` works by key; a listener with no key cannot be targeted. If a
-   subscription has a lifecycle, give it a key at birth.
+1. **Always key a listener you intend to remove or replace *by name*.** This is the
+   core rule. `RemoveListener` works by key; a plain `AddListener` with no key cannot
+   be targeted. If a subscription has a lifecycle, give it a key at birth — or, when
+   the same code registers and removes it, hold the canceller from
+   `AddListenerWithCancel` instead (see the note under Applicability).
 
 2. **v1.4 behavior change — `RemoveListener("")` no longer removes unkeyed listeners.**
    In earlier behavior, calling `RemoveListener` with an empty string could match
@@ -186,7 +203,7 @@ registers once: the second `AddListener` with an existing key is a no-op that re
    prevents accidental collisions between unrelated subscribers sharing one signal —
    which matters most on a [Shared Event Registry](../architectural/shared-event-registry.md).
 
-6. **Guard registration with `HasKey` (🔜 v1.4) when you need a decision, not a count.**
+6. **Guard registration with `HasKey` when you need a decision, not a count.**
    `if !sig.HasKey(k) { sig.AddListener(h, k) }` reads more clearly than inspecting a
    `-1`, and is O(1). For diagnostics, `Keys()` gives a snapshot you can log or expose
    on a health endpoint to see exactly who is subscribed.
@@ -223,9 +240,9 @@ if n == -1 {
     // already registered under this key — treat as "ensure exactly one"
 }
 
-// 4. INTROSPECT (🔜 v1.4) — decide without inspecting a count.
+// 4. INTROSPECT — decide without inspecting a count.
 if sig.HasKey(key) { /* exactly one subscriber lives under key */ }
-_ = sig.Keys() // 🔜 v1.4 — snapshot of every registered key, for diagnostics
+_ = sig.Keys() // snapshot of every caller-supplied key, for diagnostics
 
 // 5. REPLACE — there is no atomic swap: remove first, then re-add under the
 //    SAME key (dedup would reject a re-add if the old one were still present).
@@ -301,8 +318,7 @@ disposed view component.
 
 A service reloads configuration on a SIGHUP and wants the *new* config baked into the
 handler. Because there is no atomic swap call, you `RemoveListener` then `AddListener`
-under the same key; `HasKey` (🔜 v1.4) guards against wiring the handler up twice at
-startup.
+under the same key; `HasKey` guards against wiring the handler up twice at startup.
 
 ```go
 package config
@@ -323,10 +339,10 @@ var ConfigReloaded = signals.New[Reloaded]()
 
 const applyKey = "config/apply-to-router"
 
-// Install wires the apply handler once. HasKey (🔜 v1.4) makes the guard explicit:
+// Install wires the apply handler once. HasKey makes the guard explicit:
 // a second Install (double-init, test re-run) is a clean no-op, not a duplicate.
 func Install(router *Router) {
-    if ConfigReloaded.HasKey(applyKey) { // 🔜 v1.4 — clearer than inspecting -1
+    if ConfigReloaded.HasKey(applyKey) { // clearer than inspecting -1
         return // already installed
     }
     ConfigReloaded.AddListener(func(ctx context.Context, r Reloaded) {
@@ -352,18 +368,20 @@ every other reload subscriber (metrics, audit, feature-flag cache) is untouched.
 **Contrast — the anonymous registration that cannot be undone:**
 
 ```go
-// ❌ No key: this listener can never be individually removed or replaced.
+// ❌ No key, no handle: this listener can never be individually removed or replaced.
 AccountChanged.AddListener(func(ctx context.Context, a Account) { /* ... */ })
-// Unmount has no handle. The choice is: leak it forever, or Reset() everyone.
+// Unmount has nothing to target. The choice is: leak it forever, or Reset() everyone.
 ```
 
 The symptom in production: a component that re-subscribes on every reconnect slowly
 accumulates duplicate anonymous listeners; emit work multiplies, and captured objects
-never get collected — a leak with no clean fix short of `Reset()`.
+never get collected — a leak with no clean fix short of `Reset()`. (If the listener
+truly needs no name, `AddListenerWithCancel` would at least have returned a removal
+handle; a plain anonymous `AddListener` returns only a count.)
 
 ## Variations
 
-- **Register-if-absent.** Use `HasKey(key)` (🔜 v1.4) to decide before adding, instead
+- **Register-if-absent.** Use `HasKey(key)` to decide before adding, instead
   of relying on the `-1` return — clearer intent for "ensure exactly one."
 - **Replace-only-if-present.** Check `HasKey` before a swap so you don't accidentally
   *create* a subscriber when you meant to update an existing one.
@@ -388,11 +406,12 @@ never get collected — a leak with no clean fix short of `Reset()`.
 ## Related Patterns
 
 - **[One-Shot Subscription](one-shot-subscription.md)** — for a listener that removes
-  itself after a single fire; a keyed `AddOnce` (🔜 v1.4, `AddOnce(h, key)`) combines
+  itself after a single fire; a keyed `AddOnce` (`AddOnce(h, key)`) combines
   one-shot semantics with a key.
 - **[Subscription Teardown](subscription-teardown.md)** — the lifecycle discipline that
-  *uses* keys (and `Reset`) to remove listeners and avoid leaks. Keying is what makes
-  targeted teardown possible.
+  *uses* keys (and `Reset`, and the `WithCancel` cancellers) to remove listeners and
+  avoid leaks. Keys make *named* targeted teardown possible; the cancellers cover the
+  anonymous case.
 - **[Shared Event Registry](../architectural/shared-event-registry.md)** — where keyed,
   namespaced subscriptions matter most: many independent packages subscribe to one
   signal and must not step on each other.

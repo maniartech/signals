@@ -2,7 +2,8 @@
 
 **Family:** Subscription Lifecycle
 · **Also Known As:** Cleanup, Lifecycle Management, Leak Avoidance
-· **Status:** ✅ shipped (`Reset`, `RemoveListener`); relies on the v1.4
+· **Status:** ✅ shipped (`Reset`, `RemoveListener`, and the handle-based
+  `AddListenerWithCancel`/`AddOnceWithCancel` cancellers); relies on the v1.4
   semaphore-based async design for the "no `Close()` needed" guarantee
 
 ## Intent
@@ -61,7 +62,16 @@ func (s *Session) Close() {
 
 `Reset()` removes all listeners in one call, dropping their captured references so the
 `*User` graph becomes collectable. If you only want to detach one widget, remove it by
-key. Either way, teardown is about **letting the listeners (and what they capture) go**,
+key — or skip the key bookkeeping entirely and hold the **canceller** that
+`AddListenerWithCancel` returns:
+
+```go
+cancel := s.Messages.AddListenerWithCancel(typingIndicator(u))
+// ...
+defer cancel() // removes exactly this listener; idempotent, no key to invent
+```
+
+Either way, teardown is about **letting the listeners (and what they capture) go**,
 not about closing a signal that was never holding a goroutine in the first place.
 
 ## Applicability
@@ -101,6 +111,8 @@ not about closing a signal that was never holding a goroutine in the first place
   │    background goroutine — idle signal = 0 goroutines)     │
   │                                                           │
   │  scope ends ─▶ teardown:                                 │
+  │     ├─ cancel()  (handle from AddListenerWithCancel)      │
+  │     │                             ── drops one closure   │
   │     ├─ RemoveListener("typing")   ── drops one closure   │
   │     └─ Reset()                    ── drops ALL closures   │
   └─────────────────────────────────────────────────────────┘
@@ -117,7 +129,8 @@ not about closing a signal that was never holding a goroutine in the first place
 | **Owner / Scope** | The session/request/widget that creates the signal and is responsible for its teardown |
 | **Dynamic Signal** | The per-scope `AsyncSignal`/`SyncSignal`; holds the listener table |
 | **Listener closure** | The handler; may capture large objects that stay alive while it's registered |
-| **`RemoveListener(key)`** | Detaches **one** listener, releasing its captured references |
+| **`RemoveListener(key)`** | Detaches **one** named listener, releasing its captured references |
+| **Canceller `func()`** | Returned by `AddListenerWithCancel`/`AddOnceWithCancel`; detaches **one** listener by handle, no key needed; idempotent |
 | **`Reset()`** | Detaches **all** listeners at once; makes the signal safe to reuse |
 | **Counting semaphore** (v1.4) | Bounds in-flight async work; exists only during emits — no standing goroutine |
 | **Garbage collector** | Reclaims the idle signal and freed closures once unreferenced |
@@ -125,12 +138,16 @@ not about closing a signal that was never holding a goroutine in the first place
 ## Collaborations
 
 1. The owner creates a signal within a dynamic scope and registers listeners,
-   **keying** any it intends to remove individually.
+   **keying** any it intends to remove individually — or registering via
+   `AddListenerWithCancel` and **holding the returned canceller** when the listener
+   has no natural name.
 2. During the scope's life, emits run listeners. Async dispatch borrows a semaphore
    slot **per in-flight emit** and releases it on completion — **no goroutine persists
    between emits.**
 3. When the scope ends, the owner performs teardown:
-   - `RemoveListener(key)` to detach a single subscriber (e.g. one closed widget), or
+   - `RemoveListener(key)` to detach a single **named** subscriber (e.g. one closed widget),
+   - the **canceller func** to detach a single handle-held subscriber
+     (`cancel()` — typically wired as `defer cancel()` at registration), or
    - `Reset()` to detach **all** subscribers at once.
 4. Removing a listener drops the only reference the signal held to that closure; the
    closure — and anything it captured — becomes eligible for collection.
@@ -181,21 +198,46 @@ not about closing a signal that was never holding a goroutine in the first place
    whose lifetime is shorter than the signal's, **remove it when its owner goes away.**
    This is the single discipline that makes the pattern matter.
 
-3. **Key anything you'll remove individually.** `RemoveListener` is by key; an anonymous
-   listener can't be detached without `Reset()`. If a subscriber has its own lifecycle,
-   give it a key at registration — see [Keyed Subscription](keyed-subscription.md).
+3. **Surgical teardown has two handles: a key or a canceller — pick by how the
+   listener is owned.** `RemoveListener` is by key, so anything you'll remove
+   *by name* needs a key at registration (see
+   [Keyed Subscription](keyed-subscription.md)). But a plain `AddListener` with no
+   key is no longer un-removable: register through `AddListenerWithCancel` and hold
+   the returned func instead:
 
-4. **`Reset()` for whole-scope teardown; `RemoveListener` for surgical teardown.** When
-   a session/request ends, `Reset()` clears everything in one call. When a single widget
-   closes but the session lives on, remove just that widget's key. Pick the granularity
-   that matches what's ending.
+   ```go
+   cancel := sig.AddListenerWithCancel(handler)
+   defer cancel() // teardown wired at the registration site; no key bookkeeping
+   ```
 
-5. **`Reset()` makes a signal safe to reuse.** After `Reset()` the signal is empty and
+   Choose the **handle** (canceller) when the listener is anonymous or scoped — a
+   closure with no natural name, torn down by the same code that registered it.
+   Choose a **key** when the subscription must be addressable across modules
+   (registered here, removed there), needs duplicate detection, or should show up in
+   `Keys()`/`HasKey` introspection. (`AddOnceWithCancel` is the one-shot counterpart —
+   see [One-Shot Subscription](one-shot-subscription.md).)
+
+4. **Canceller semantics you can lean on.** The returned func is **idempotent**:
+   calling it twice removes the listener at most once. It is **stale-safe**: a
+   canceller from an earlier registration never removes a later re-add of the same
+   caller key (a `sync.Once` guard sees to it). And on a **duplicate caller key**,
+   `AddListenerWithCancel` adds nothing and returns a **no-op** canceller — it will
+   not remove the pre-existing listener. Unkeyed registrations get an internal
+   auto-key that is hidden from `Keys()`, so handle-based listeners don't pollute
+   your introspection surface. Like `RemoveListener`, cancellation affects
+   *subsequent* emissions; an emission already in flight may still deliver.
+
+5. **`Reset()` for whole-scope teardown; `RemoveListener`/canceller for surgical
+   teardown.** When a session/request ends, `Reset()` clears everything in one call.
+   When a single widget closes but the session lives on, remove just that widget's
+   key (or call its canceller). Pick the granularity that matches what's ending.
+
+6. **`Reset()` makes a signal safe to reuse.** After `Reset()` the signal is empty and
    valid; you can re-subscribe and keep emitting. Reuse avoids re-allocating a signal
    for a recurring scope, and (since the zero value is usable) keeps construction
    cheap either way.
 
-6. **Mind in-flight emits during teardown.** Removal affects *future* dispatch. A
+7. **Mind in-flight emits during teardown.** Removal affects *future* dispatch. A
    listener currently executing as part of an in-flight async emit will run to
    completion even after `RemoveListener`/`Reset`. If you must ensure no listener is
    running before releasing a captured resource, drain/quiesce emits first (e.g. stop
@@ -203,10 +245,10 @@ not about closing a signal that was never holding a goroutine in the first place
    [Bounded Concurrency](../flow-control/bounded-concurrency.md) for how in-flight work
    is bounded.
 
-7. **Tie teardown to the scope's lifecycle hook.** Put `Reset()`/`RemoveListener` in the
-   exact place the scope ends — `defer session.Close()`, an HTTP middleware's cleanup,
-   a widget's `OnUnmount`. A teardown that isn't wired to a hook is a teardown that
-   doesn't happen.
+8. **Tie teardown to the scope's lifecycle hook.** Put `Reset()`/`RemoveListener`/the
+   canceller in the exact place the scope ends — `defer session.Close()`,
+   `defer cancel()`, an HTTP middleware's cleanup, a widget's `OnUnmount`. A teardown
+   that isn't wired to a hook is a teardown that doesn't happen.
 
 ## Sample Code
 
@@ -214,10 +256,10 @@ not about closing a signal that was never holding a goroutine in the first place
 
 A minimal skeleton that maps one-to-one onto the **Participants** and the
 **Structure** diagram above — the *Owner/Scope* that creates a dynamic *Signal*, the
-*listener closures* that capture large objects, and the two teardown calls
-(`RemoveListener` for one, `Reset` for all). Note what is **not** here: there is no
-`Close()` on the signal, because an idle signal holds no goroutines. Read this first;
-the practical examples then apply it to real problems.
+*listener closures* that capture large objects, and the three teardown paths
+(a canceller or `RemoveListener` for one, `Reset` for all). Note what is **not**
+here: there is no `Close()` on the signal, because an idle signal holds no
+goroutines. Read this first; the practical examples then apply it to real problems.
 
 ```go
 // 1. OWNER/SCOPE creates a per-scope SIGNAL (session/request/widget).
@@ -232,11 +274,19 @@ sig.AddListener(func(ctx context.Context, e Event) {
     subject.Track(e)
 }, "handler-b")
 
+// 2c. HANDLE-HELD CLOSURE — anonymous/scoped listener with no natural name:
+//     register WithCancel and keep the canceller instead of inventing a key.
+cancel := sig.AddListenerWithCancel(func(ctx context.Context, e Event) {
+    subject.Trace(e)
+})
+defer cancel() // idempotent; teardown lives next to the registration
+
 // ...emits run while the scope is live. Async borrows a semaphore slot PER emit
 //    and releases it on completion — NO standing background goroutine exists.
 
 // 3. TEARDOWN — surgical: drop ONE closure when its owner (e.g. a widget) goes away.
-sig.RemoveListener("handler-b") // releases only handler-b's captured refs
+sig.RemoveListener("handler-b") // by key — releases only handler-b's captured refs
+cancel()                        // by handle — releases only the handle-held closure
 
 // 4. TEARDOWN — whole-scope: drop ALL closures at once on scope end (logout/request).
 sig.Reset() // releases every captured ref; signal is now empty AND reusable
@@ -367,14 +417,21 @@ The symptom in production: memory grows roughly linearly with the number of sess
 ever created (not currently active). It is **not** a goroutine leak — goroutine count
 stays flat — which is exactly why it's often misdiagnosed. A heap profile shows a
 mounting population of retained `*User` objects pinned by live listener closures.
+The fix is one line at registration: either a key (`AddListener(h, "inbox/"+u.ID)`
+removed on logout) or `cancel := sig.AddListenerWithCancel(h)` with `cancel()` stored
+on the session and called on logout.
 
 ## Variations
 
 - **Whole-scope `Reset()`.** The session/request ends; drop everything in one call.
 - **Surgical `RemoveListener`.** One subscriber's lifecycle ends inside a longer-lived
   scope; remove just its key (see [Keyed Subscription](keyed-subscription.md)).
+- **Handle-based teardown.** `cancel := sig.AddListenerWithCancel(h); defer cancel()` —
+  the canceller is the handle; no key to invent, idempotent, and a stale canceller
+  never removes a later re-add of the same key.
 - **`defer`-based teardown.** For request-scoped signals, `defer sig.Reset()` (or a
-  scope `Close`) guarantees cleanup even on the error path.
+  scope `Close`, or `defer cancel()` per listener) guarantees cleanup even on the
+  error path.
 - **Reset-and-reuse.** Recurring scopes reuse one signal object via `Reset()` between
   uses, avoiding repeated allocation.
 - **Self-teardown.** Where a listener should clean *itself* up after a single fire,
@@ -395,8 +452,9 @@ mounting population of retained `*User` objects pinned by live listener closures
 
 ## Related Patterns
 
-- **[Keyed Subscription](keyed-subscription.md)** — the prerequisite for *targeted*
-  teardown: `RemoveListener` works by key. Keys are what make surgical removal possible.
+- **[Keyed Subscription](keyed-subscription.md)** — the *named* half of targeted
+  teardown: `RemoveListener` works by key. The `WithCancel` cancellers are the
+  *handle-based* half, for listeners with no natural name.
 - **[One-Shot Subscription](one-shot-subscription.md)** — self-teardown for the
   single-fire case; removes the listener for you so there's nothing to clean up.
 - **[Shared Event Registry](../architectural/shared-event-registry.md)** — the place

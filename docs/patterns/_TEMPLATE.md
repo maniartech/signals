@@ -9,7 +9,7 @@
 
 **Family:** <Dispatch | Reliability | Flow-Control | Subscription Lifecycle | Architectural>
 · **Also Known As:** <common aliases, or "—">
-· **Status:** <✅ shipped | 🔜 v1.4 | mixed (note which parts)>
+· **Status:** <✅ shipped | 🔭 post-v1.4 (deferred) | mixed (note which parts)>
 
 ## Intent
 <One or two sentences: what this pattern accomplishes and the problem it solves.

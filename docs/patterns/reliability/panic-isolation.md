@@ -200,7 +200,8 @@ alert to fix — a bug report instead of an outage.
 
 8. **Distinguish a panic from a shed event and from a returned error.** Three different
    things land in three places: a *shed* event never ran a listener
-   ([Load Shedding](../flow-control/load-shedding.md) → `OnOverflow`); a *returned error*
+   ([Load Shedding](../flow-control/load-shedding.md) → `OnOverflow`, 🔭 post-v1.4 —
+   nothing is shed in v1.4); a *returned error*
    ran and failed expectedly (→ `OnError` / joined result); a *panic* ran and hit a bug
    (→ `SetPanicHandler`). Keep their metrics separate so dashboards stay legible.
 

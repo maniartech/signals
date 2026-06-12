@@ -2,8 +2,8 @@
 
 **Family:** Flow-Control
 · **Also Known As:** Worker Limiting, Concurrency Cap, Semaphore Dispatch
-· **Status:** `SignalOptions.MaxConcurrent` and `DefaultMaxConcurrent()` are 🔜 v1.4.
-  A hard backlog ceiling (overflow mode H1) is 🔭 post-v1.4.
+· **Status:** ✅ shipped — `SignalOptions.MaxConcurrent` and `DefaultMaxConcurrent()`
+  ship in v1.4. A hard backlog ceiling (overflow mode H1) is 🔭 post-v1.4.
 
 ## Intent
 
@@ -224,13 +224,13 @@ decision; bounding the concurrency is the foundation that makes either choice po
    does **not** apply a default bound, because any bound can *starve long-running
    listeners* (note 2 above and the Liabilities): a silent default could make some
    listeners never run. If you want bounding without choosing a number, opt in with
-   `DefaultMaxConcurrent()` (🔜 v1.4 — returns `2 * runtime.NumCPU()`), the
+   `DefaultMaxConcurrent()` (✅ — returns `2 * runtime.NumCPU()`), the
    *recommended* value; it is recommended, not automatic.
 
    ```go
    // Opt in to the recommended bound explicitly — unset stays unbounded.
    sig := signals.NewWithOptions[T](&signals.SignalOptions{
-       MaxConcurrent: signals.DefaultMaxConcurrent(), // 🔜 v1.4 — = 2*NumCPU
+       MaxConcurrent: signals.DefaultMaxConcurrent(), // ✅ — = 2*NumCPU
    })
    ```
 
@@ -292,7 +292,7 @@ Read this first to see the mechanics; the practical examples then apply it.
 ```go
 // 1. SIGNAL with a concurrency BOUND (the counting semaphore: N slots).
 sig := signals.NewWithOptions[Job](&signals.SignalOptions{
-    MaxConcurrent: 8, // 🔜 v1.4 — the bound: ≤ 8 listener goroutines at once
+    MaxConcurrent: 8, // ✅ — the bound: ≤ 8 listener goroutines at once
 })
 
 // 2. LISTENER — the admitted work. Oblivious to the bound.
@@ -353,7 +353,7 @@ func Init(db *sql.DB) {
     // Bound listener concurrency to exactly what the pool can serve.
     // No Close() needed: when idle, this signal holds zero goroutines and is GC-able.
     persisted = signals.NewWithOptions[Order](&signals.SignalOptions{
-        MaxConcurrent: dbMaxConns, // 🔜 v1.4 — at most 50 writes in flight
+        MaxConcurrent: dbMaxConns, // ✅ — at most 50 writes in flight
     })
 
     persisted.AddListener(func(ctx context.Context, o Order) {
@@ -420,7 +420,7 @@ func Init(vendor VendorClient) {
     // Match the bound to the dependency's capacity, not to the event rate.
     // No standing pool: idle between bursts, this signal holds zero goroutines.
     enriched = signals.NewWithOptions[Event](&signals.SignalOptions{
-        MaxConcurrent: vendorMaxConcurrent, // 🔜 v1.4 — never more than 20 calls in flight
+        MaxConcurrent: vendorMaxConcurrent, // ✅ — never more than 20 calls in flight
     })
 
     enriched.AddListener(func(ctx context.Context, e Event) {

@@ -96,8 +96,8 @@ The rule of thumb: **loss-intolerant data (trades, orders, audit entries) belong
 ## Authoritative API reference (use these signatures exactly)
 
 Every pattern in this catalog must use the signatures below and nothing else.
-APIs are tagged **✅ shipped** (available today), **🔜 v1.4** (agreed for the v1.4
-release), or **🔭 post-v1.4** (designed but deliberately deferred — see
+APIs are tagged **✅ shipped** (available today, including everything that landed in
+v1.4) or **🔭 post-v1.4** (designed but deliberately deferred — see
 [ADR 0001](../design/0001-async-dispatch-and-error-model.md)). Never invent APIs
 beyond this list.
 
@@ -116,12 +116,12 @@ signals.New[T]() *AsyncSignal[T]                               // ✅ async sign
 signals.NewSync[T]() *SyncSignal[T]                            // ✅ sync signal
 signals.NewWithOptions[T](*SignalOptions) *AsyncSignal[T]      // ✅
 signals.NewSyncWithOptions[T](*SignalOptions) *SyncSignal[T]   // ✅
-signals.DefaultMaxConcurrent() int                           // 🔜 v1.4 — recommended bound = 2*NumCPU
+signals.DefaultMaxConcurrent() int                           // ✅ recommended bound = 2*NumCPU
 
 type SignalOptions struct {
     InitialCapacity int             // ✅
     GrowthFunc      func(int) int   // ✅
-    MaxConcurrent  int             // 🔜 v1.4 — bounds CONCURRENT handlers; 0/unset = unbounded
+    MaxConcurrent  int             // ✅ bounds CONCURRENT handlers; 0/unset = unbounded
     // Overflow OverflowPolicy      // 🔭 post-v1.4 — explicit drop/block/error policy (NOT in v1.4)
 }
 
@@ -140,17 +140,44 @@ type SignalListenerErr[T any] func(context.Context, T) error   // ✅ error-retu
 ### Subscription (on both SyncSignal and AsyncSignal)
 ```go
 AddListener(handler SignalListener[T], key ...string) int      // ✅ returns count, or -1 if key dup
-AddListenerWithErr(handler SignalListenerErr[T], key ...string) int // ✅ sync; 🔜 v1.4 on async
+AddListenerWithErr(handler SignalListenerErr[T], key ...string) int // ✅ sync + async
 RemoveListener(key string) int                                 // ✅ returns count, or -1 if not found
 Reset()                                                        // ✅ remove all listeners
 Len() int                                                      // ✅
 IsEmpty() bool                                                 // ✅
 
-AddOnce(handler SignalListener[T], key ...string) int          // 🔜 v1.4 — fire once, auto-remove
-AddOnceWithErr(handler SignalListenerErr[T], key ...string) int // 🔜 v1.4 — error-returning one-shot
-Keys() []string                                                // 🔜 v1.4 — snapshot of keys
-HasKey(key string) bool                                        // 🔜 v1.4 — O(1) existence check
+AddOnce(handler SignalListener[T], key ...string) int          // ✅ fire once, auto-remove
+AddOnceWithErr(handler SignalListenerErr[T], key ...string) int // ✅ error-returning one-shot
+
+AddListenerWithCancel(handler SignalListener[T], key ...string) func() // ✅ repeating listener + idempotent canceller func that removes it (handle-based teardown, no key bookkeeping)
+AddOnceWithCancel(handler SignalListener[T], key ...string) func()     // ✅ one-shot + canceller; a cancel that wins the race against an in-flight fire guarantees the handler does not run
+
+Keys() []string                                                // ✅ snapshot of caller-supplied keys
+HasKey(key string) bool                                        // ✅ O(1) existence check
 ```
+
+**The registration matrix.** The core grid is {repeating, one-shot} × {plain, error}:
+
+| | plain handler | error-returning handler |
+|---|---|---|
+| **repeating** | `AddListener` | `AddListenerWithErr` |
+| **one-shot** | `AddOnce` | `AddOnceWithErr` |
+
+All four return an `int` — the subscriber count, or `-1` on a duplicate key (the int
+is **not** a handle). On top of the grid, the **plain column** also has
+handle-returning `WithCancel` variants (`AddListenerWithCancel`, `AddOnceWithCancel`)
+that return an idempotent canceller `func()` instead of a count. There are
+deliberately **no** `WithCancel` variants of the error column — error-returning
+listeners that need individual removal are exactly the named/addressable case that
+keys already serve. Two methods, not four, was a considered decision.
+
+`WithCancel` semantics every pattern can rely on: an unkeyed registration gets an
+internal auto-key (hidden from `Keys()`); a duplicate caller key adds nothing and
+returns a **no-op** canceller; the canceller is idempotent (`sync.Once`-guarded), so
+a stale canceller never removes a later re-add of the same key. `AddOnceWithCancel`'s
+canceller additionally flips the one-shot's atomic fired-guard, so a cancel that wins
+the race against an in-flight emission guarantees the handler does not run — strictly
+stronger than `RemoveListener`, which only affects subsequent emits.
 
 ### Emission — SyncSignal
 ```go
@@ -161,13 +188,13 @@ TryEmit(ctx context.Context, payload T) error   // ✅ sequential, stops on firs
 ### Emission — AsyncSignal
 ```go
 Emit(ctx context.Context, payload T)                  // ✅ fire-and-forget; one dispatcher goroutine, returns immediately
-TryEmit(ctx context.Context, payload T) error         // 🔜 v1.4 — concurrent handlers, waits for all, errors.Join'd
+TryEmit(ctx context.Context, payload T) error         // ✅ concurrent handlers, waits for all, errors.Join'd; ctx-aware
 ```
 
 ### Failure hooks
 ```go
 signals.SetPanicHandler(func(recovered any))          // ✅ global; routes recovered async panics
-(Signal[T]).OnError(func(ctx context.Context, err error))     // 🔜 v1.4 — per-signal error sink (sync+async, multiple allowed)
+(Signal[T]).OnError(func(ctx context.Context, err error))     // ✅ per-signal error sink (sync+async, multiple additive sinks, Emit-path only)
 // (*AsyncSignal[T]).OnOverflow(func(dropped T))       // 🔭 post-v1.4 — only meaningful with a drop policy (not in v1.4)
 ```
 
@@ -182,7 +209,11 @@ signals.SetPanicHandler(func(recovered any))          // ✅ global; routes reco
 - **Async panics are recovered**, never crash the process, routed to the panic
   handler. ✅
 - **Keyed dedup:** adding a second listener with an existing key returns `-1` and does
-  nothing. ✅
+  nothing (a `WithCancel` variant additionally returns a no-op canceller). ✅
+- **Removal is by key or by canceller:** `RemoveListener(key)` for keyed listeners, or
+  the idempotent `func()` returned by `AddListenerWithCancel`/`AddOnceWithCancel`.
+  There is no remove-by-position; the `int` returned by count-returning `Add*` is a
+  count, never a handle. ✅
 - **Order:** sync preserves registration order (subject to swap-remove after a
   removal); async makes **no** ordering guarantee. ✅
 
@@ -192,8 +223,8 @@ signals.SetPanicHandler(func(recovered any))          // ✅ global; routes reco
 
 | Tag | Meaning |
 |-----|---------|
-| ✅ shipped | Available in the current release |
-| 🔜 v1.4 | Agreed for v1.4; shown here so the pattern is complete |
+| ✅ shipped | Available in the current release (v1.4) |
+| 🔭 post-v1.4 | Designed but deliberately deferred; not in v1.4 |
 
 When in doubt about what your installed version exposes, see the
 [API Reference](../api_reference.md) and [RELEASENOTES.md](../../RELEASENOTES.md).
