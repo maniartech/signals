@@ -26,10 +26,10 @@ simple APIs, context propagation, and predictable concurrency behavior.
 
 **Production-Ready**: Used by [ManiarTech®](https://maniartech.com) and other companies in mission-critical applications.
 
-[![GoReportCard example](https://goreportcard.com/badge/github.com/nanomsg/mangos)](https://goreportcard.com/report/github.com/maniartech/signals)
-[![<ManiarTech®>](https://circleci.com/gh/maniartech/signals.svg?style=shield)](https://circleci.com/gh/maniartech/signals)
+[![CI](https://github.com/maniartech/signals/actions/workflows/ci.yml/badge.svg)](https://github.com/maniartech/signals/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/maniartech/signals)](https://goreportcard.com/report/github.com/maniartech/signals)
+[![Go Reference](https://pkg.go.dev/badge/github.com/maniartech/signals.svg)](https://pkg.go.dev/github.com/maniartech/signals)
 [![made-with-Go](https://img.shields.io/badge/Made%20with-Go-1f425f.svg)](https://go.dev/)
-[![GoDoc reference example](https://img.shields.io/badge/godoc-reference-blue.svg)](https://godoc.org/github.com/maniartech/signals)
 
 ## Quick Start
 
@@ -391,7 +391,7 @@ from the problem you have:
 
 ## Documentation
 
-[![GoDoc](https://godoc.org/github.com/maniartech/signals?status.svg)](https://godoc.org/github.com/maniartech/signals)
+[![Go Reference](https://pkg.go.dev/badge/github.com/maniartech/signals.svg)](https://pkg.go.dev/github.com/maniartech/signals)
 
 ## Contributing
 
