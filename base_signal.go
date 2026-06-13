@@ -87,11 +87,25 @@ type BaseSignal[T any] struct {
 	onErrMu sync.Mutex
 }
 
+// EmitOrder selects the order in which a SyncSignal invokes its listeners. Because
+// removal is order-preserving (see RemoveListener), the chosen order is stable across
+// add/remove — registration order is a genuine guarantee, not a best-effort default.
+type EmitOrder int
+
+const (
+	// FIFO invokes listeners in registration order (oldest first). This is the default.
+	FIFO EmitOrder = iota
+	// LIFO invokes listeners in reverse registration order (most-recently-added first) —
+	// the "handler stack" / reverse-teardown discipline (newest handler wins; unwind in
+	// reverse of setup). Applies to SyncSignal only.
+	LIFO
+)
+
 // SignalOptions allows advanced users to customize memory allocation and growth behavior
 // for the subscriber list. This is useful for optimizing performance when the expected
 // number of listeners is known in advance, or when a specific growth pattern is desired.
 //
-// Both fields are optional; if not specified, sensible defaults based on prime numbers
+// All fields are optional; if not specified, sensible defaults based on prime numbers
 // will be used to minimize memory fragmentation and optimize cache locality.
 type SignalOptions struct {
 	// InitialCapacity sets the initial capacity for the subscribers slice.
@@ -121,6 +135,13 @@ type SignalOptions struct {
 	//
 	// Sync signals ignore this field. Has no effect once a signal is constructed.
 	MaxConcurrent int
+
+	// Order selects the listener invocation order for a SyncSignal: FIFO (registration
+	// order, the default) or LIFO (reverse — most-recently-added first, the handler-stack
+	// discipline). Because removal preserves order, the chosen order is stable across
+	// add/remove. AsyncSignal ignores this field (its invocation order is unspecified).
+	// Has no effect once a signal is constructed.
+	Order EmitOrder
 }
 
 // defaultInitialCapacity is the starting capacity for the subscribers slice.
@@ -455,8 +476,9 @@ func (s *BaseSignal[T]) AddOnceWithCancel(handler SignalListener[T], key ...stri
 }
 
 // RemoveListener removes a listener identified by the given key from the signal.
-// This method uses a swap-remove strategy for O(1) deletion, which may change
-// the order of remaining listeners.
+// Removal is order-preserving: the relative order of the remaining listeners is
+// unchanged, so a SyncSignal's emission order (FIFO or LIFO) stays stable across
+// add/remove. Like every write it is copy-on-write and O(n).
 //
 // Parameters:
 //   - key: The unique identifier of the listener to remove
@@ -484,17 +506,17 @@ func (s *BaseSignal[T]) RemoveListener(key string) int {
 	delete(s.subscribersMap, key)
 
 	old := s.load()
-	n := len(old)
-	// Copy-on-write: build a fresh slice, then swap-remove within the copy so the
-	// previously published slice (which readers may still be iterating) is untouched.
-	dup := make([]keyedListener[T], n, cap(old))
-	copy(dup, old)
-	for i := range dup {
-		if dup[i].keyed && dup[i].key == key {
-			dup[i] = dup[n-1]
-			dup = dup[:n-1]
-			break
+	// Copy-on-write, order-preserving removal: build a fresh slice that omits the
+	// matched listener while keeping the relative order of the rest (so emission order
+	// is stable across removals). The previously published slice — which readers may
+	// still be iterating — is never mutated. Copies n-1 elements, same O(n) as the
+	// whole-slice copy every write already pays.
+	dup := make([]keyedListener[T], 0, cap(old))
+	for i := range old {
+		if old[i].keyed && old[i].key == key {
+			continue // drop exactly the matched keyed listener
 		}
+		dup = append(dup, old[i])
 	}
 	s.subs.Store(&dup)
 	return len(dup)

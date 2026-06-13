@@ -48,10 +48,11 @@ type Signal[T any] interface {
 	// was already added to the signal.
 	//
 	// The returned int is a COUNT, not a positional handle: it is not an index and
-	// must not be passed to any remove operation. Removal is by key only (there is no
-	// remove-by-position) — listener positions are not stable (RemoveListener uses
-	// swap-remove). To remove a specific listener later, register it with a key and
-	// call RemoveListener(key); unkeyed listeners can only be cleared via Reset.
+	// must not be passed to any remove operation. Removal is by key (there is no
+	// remove-by-position). To remove a specific listener later, register it with a key
+	// and call RemoveListener(key), or use AddListenerWithCancel to get a keyless
+	// canceller; unkeyed listeners can otherwise only be cleared via Reset. Removal is
+	// order-preserving, so it never disturbs the emission order of the remaining listeners.
 	//
 	// Example:
 	//	signal := signals.NewSync[int]()
@@ -184,8 +185,14 @@ func NewWithOptions[T any](opts *SignalOptions) *AsyncSignal[T] {
 }
 
 // NewSyncWithOptions creates a new sync Signal with custom allocation/growth options.
+// Pass SignalOptions.Order = signals.LIFO to invoke listeners in reverse registration
+// order (the handler-stack discipline); the default is FIFO.
 func NewSyncWithOptions[T any](opts *SignalOptions) *SyncSignal[T] {
-	return &SyncSignal[T]{
+	s := &SyncSignal[T]{
 		baseSignal: NewBaseSignal[T](opts),
 	}
+	if opts != nil {
+		s.order = opts.Order
+	}
+	return s
 }

@@ -562,3 +562,27 @@ func TestAddOnceWithCancel_DuplicateKeyNoOp(t *testing.T) {
 		t.Fatalf("no-op canceller removed pre-existing one-shot; len %d", sig.Len())
 	}
 }
+
+// Deterministically exercises AddOnceWithCancel's already-fired guard: a listener
+// registered before the one-shot triggers a re-entrant emit on its first call. The
+// outer emit's snapshot still contains the one-shot, so after the inner emit fires
+// and removes it, the outer emit invokes the wrapper again — which the fired-guard
+// turns into a no-op. Net effect: exactly one fire, branch covered without timing luck.
+func TestAddOnceWithCancel_ReentrantEmitFiresOnce(t *testing.T) {
+	sig := signals.NewSync[int]()
+	var fired int32
+	reentered := false
+	sig.AddListener(func(ctx context.Context, v int) {
+		if !reentered {
+			reentered = true
+			sig.Emit(ctx, v) // re-entrant: fires the one-shot within the outer snapshot
+		}
+	}, "trigger")
+	sig.AddOnceWithCancel(func(ctx context.Context, v int) {
+		atomic.AddInt32(&fired, 1)
+	})
+	sig.Emit(context.Background(), 1)
+	if got := atomic.LoadInt32(&fired); got != 1 {
+		t.Fatalf("one-shot fired %d times; want exactly 1 (already-fired guard)", got)
+	}
+}

@@ -20,6 +20,11 @@ type SyncSignal[T any] struct {
 	// baseSignal handles listener management and storage
 	baseSignal *BaseSignal[T]
 	baseOnce   sync.Once
+
+	// order is the listener invocation order (FIFO default, or LIFO). It is set once at
+	// construction (from SignalOptions.Order) and read on the lock-free emit path; the
+	// zero value is FIFO, so a zero-value SyncSignal emits in registration order.
+	order EmitOrder
 }
 
 func (s *SyncSignal[T]) ensureBase() {
@@ -114,9 +119,19 @@ func (s *SyncSignal[T]) OnError(sink func(ctx context.Context, err error)) {
 	s.baseSignal.OnError(sink)
 }
 
+// iterStart returns the starting index and step for iterating n listeners in this
+// signal's configured order: forward (0, +1) for FIFO, backward (n-1, -1) for LIFO.
+func (s *SyncSignal[T]) iterStart(n int) (i, step int) {
+	if s.order == LIFO {
+		return n - 1, -1
+	}
+	return 0, 1
+}
+
 // Emit synchronously invokes all registered listeners with the given payload.
-// Listeners are called sequentially in the order they were registered (though order
-// may change after removals due to swap-remove optimization).
+// Listeners are called sequentially in the signal's configured order — FIFO
+// (registration order, the default) or LIFO (reverse, most-recently-added first).
+// The order is stable across add/remove because removal preserves order.
 //
 // The method blocks until all listeners have completed execution. If the provided
 // context is cancelled or times out, remaining listeners will not be invoked.
@@ -134,7 +149,8 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 	// No lock and no snapshot copy — the slice is never mutated after publication,
 	// so iterating it is safe even if a concurrent writer swaps in a new one.
 	subscribers := s.baseSignal.load()
-	for i := range subscribers {
+	i, step := s.iterStart(len(subscribers))
+	for k := 0; k < len(subscribers); k++ {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
@@ -149,11 +165,10 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 			if err := sub.listenerErr(ctx, payload); err != nil {
 				s.baseSignal.routeError(ctx, err)
 			}
-			continue
-		}
-		if sub.listener != nil {
+		} else if sub.listener != nil {
 			sub.listener(ctx, payload)
 		}
+		i += step
 	}
 }
 
@@ -161,7 +176,7 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 // This method is similar to Emit but provides error handling and propagation capabilities.
 //
 // Behavior:
-//   - Invokes listeners sequentially in registration order
+//   - Invokes listeners sequentially in the signal's configured order (FIFO default, or LIFO)
 //   - Stops immediately if context is cancelled or any error-returning listener fails
 //   - Returns the first error encountered (context error or listener error)
 //   - Returns nil if all listeners complete successfully
@@ -195,7 +210,8 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 
 	// Lock-free read: a single atomic load of the immutable subscriber slice.
 	subscribers := s.baseSignal.load()
-	for i := range subscribers {
+	i, step := s.iterStart(len(subscribers))
+	for k := 0; k < len(subscribers); k++ {
 		// Stop invoking further listeners if the context is canceled
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
@@ -207,11 +223,10 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 			if err := sub.listenerErr(ctx, payload); err != nil {
 				return err
 			}
-			continue
-		}
-		if sub.listener != nil {
+		} else if sub.listener != nil {
 			sub.listener(ctx, payload)
 		}
+		i += step
 	}
 	if ctx != nil {
 		return ctx.Err()

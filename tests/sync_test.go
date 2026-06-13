@@ -3,6 +3,7 @@ package signals_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,5 +345,71 @@ func TestSyncSignal_OnErrorRoutesEmitErrors(t *testing.T) {
 	}
 	if !afterRan {
 		t.Fatal("sync Emit must not stop the chain on a listener error (best-effort)")
+	}
+}
+
+// --- Emission order: FIFO (default) and LIFO, stable across removals (FR-9 I15) ---
+
+// FIFO is the default: listeners fire in registration order.
+func TestEmitOrder_FIFODefault(t *testing.T) {
+	sig := signals.NewSync[int]()
+	var got []string
+	for _, name := range []string{"a", "b", "c"} {
+		n := name
+		sig.AddListener(func(ctx context.Context, v int) { got = append(got, n) }, n)
+	}
+	sig.Emit(context.Background(), 1)
+	if strings.Join(got, ",") != "a,b,c" {
+		t.Fatalf("FIFO order = %v; want [a b c]", got)
+	}
+}
+
+// LIFO invokes listeners in reverse registration order (handler-stack discipline).
+func TestEmitOrder_LIFO(t *testing.T) {
+	sig := signals.NewSyncWithOptions[int](&signals.SignalOptions{Order: signals.LIFO})
+	var got []string
+	for _, name := range []string{"a", "b", "c"} {
+		n := name
+		sig.AddListener(func(ctx context.Context, v int) { got = append(got, n) }, n)
+	}
+	sig.Emit(context.Background(), 1)
+	if strings.Join(got, ",") != "c,b,a" {
+		t.Fatalf("LIFO order = %v; want [c b a]", got)
+	}
+}
+
+// Removing a middle listener must NOT reorder the rest — order is preserved across
+// removal (the whole point of pairing LIFO with order-preserving removal).
+func TestEmitOrder_StableAcrossRemoval(t *testing.T) {
+	sig := signals.NewSync[int]()
+	var got []string
+	for _, name := range []string{"a", "b", "c", "d"} {
+		n := name
+		sig.AddListener(func(ctx context.Context, v int) { got = append(got, n) }, n)
+	}
+	sig.RemoveListener("b")
+	sig.Emit(context.Background(), 1)
+	if strings.Join(got, ",") != "a,c,d" {
+		t.Fatalf("order after removing 'b' = %v; want [a c d] (stable, not swap-remove)", got)
+	}
+	if strings.Join(sig.Keys(), ",") != "a,c,d" {
+		t.Fatalf("Keys after removal = %v; want [a c d]", sig.Keys())
+	}
+}
+
+// LIFO is stable across removal too, and TryEmit stops at the first error in reverse.
+func TestEmitOrder_LIFO_TryEmitStopsInReverse(t *testing.T) {
+	sig := signals.NewSyncWithOptions[int](&signals.SignalOptions{Order: signals.LIFO})
+	var got []string
+	boom := errors.New("boom")
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { got = append(got, "a"); return nil }, "a")
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { got = append(got, "b"); return boom }, "b")
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { got = append(got, "c"); return nil }, "c")
+	// LIFO order is c, b, a; 'b' fails => runs c then b, then stops ('a' never runs).
+	if err := sig.TryEmit(context.Background(), 1); !errors.Is(err, boom) {
+		t.Fatalf("TryEmit err = %v; want boom", err)
+	}
+	if strings.Join(got, ",") != "c,b" {
+		t.Fatalf("LIFO TryEmit ran %v; want [c b] (stopped at first error in reverse)", got)
 	}
 }
