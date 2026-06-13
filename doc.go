@@ -45,11 +45,12 @@
 //     load) and never block on a concurrent writer — a liveness guarantee, not
 //     merely a performance note. Writers are strictly serialized; the slice swap
 //     and keyed-map update are jointly consistent (no lost updates).
-//   - Ordering: a SyncSignal invokes listeners in the current slice order, which
-//     equals registration order only until the first RemoveListener (removal uses
-//     swap-remove and may reorder). AsyncSignal listener execution order is
-//     unspecified; TryEmit's joined error, however, is in deterministic
-//     registration order.
+//   - Ordering: a SyncSignal invokes listeners in its configured order — FIFO
+//     (registration order, the default) or LIFO (reverse; SignalOptions.Order).
+//     Removal is order-preserving, so the chosen order is STABLE across add/remove —
+//     a genuine guarantee, not best-effort. AsyncSignal listener execution order is
+//     unspecified; TryEmit's joined error, however, is in deterministic registration
+//     order.
 //   - Reentrancy and visibility: a listener may safely Add/Remove/Reset/Emit on
 //     the same signal during its own invocation. The in-flight emission iterates
 //     the previously published immutable snapshot, so such mutations affect only
