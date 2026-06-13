@@ -415,31 +415,31 @@ func TestEmitOrder_LIFO_TryEmitStopsInReverse(t *testing.T) {
 	}
 }
 
-// --- StopPropagation: a sync listener halts the chain early (a control value, not a failure) ---
+// --- ErrStopPropagation: a sync listener halts the chain early (a control value, not a failure) ---
 
 // Emit: the remaining listeners are skipped, and the sentinel is NOT routed to OnError.
-func TestStopPropagation_EmitStopsChainNotRouted(t *testing.T) {
+func TestErrStopPropagation_EmitStopsChainNotRouted(t *testing.T) {
 	sig := signals.NewSync[int]()
 	var order []string
 	routed := 0
 	sig.OnError(func(ctx context.Context, err error) { routed++ })
 	sig.AddListenerWithErr(func(ctx context.Context, v int) error { order = append(order, "a"); return nil }, "a")
-	sig.AddListenerWithErr(func(ctx context.Context, v int) error { order = append(order, "b"); return signals.StopPropagation }, "b")
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { order = append(order, "b"); return signals.ErrStopPropagation }, "b")
 	sig.AddListener(func(ctx context.Context, v int) { order = append(order, "c") }, "c") // must NOT run
 	sig.Emit(context.Background(), 1)
 	if strings.Join(order, ",") != "a,b" {
-		t.Fatalf("Emit ran %v; want [a b] (c skipped after StopPropagation)", order)
+		t.Fatalf("Emit ran %v; want [a b] (c skipped after ErrStopPropagation)", order)
 	}
 	if routed != 0 {
-		t.Fatalf("StopPropagation routed to OnError %d times; want 0 (it is a control value)", routed)
+		t.Fatalf("ErrStopPropagation routed to OnError %d times; want 0 (it is a control value)", routed)
 	}
 }
 
 // TryEmit: returns nil (clean stop), remaining listeners skipped.
-func TestStopPropagation_TryEmitReturnsNil(t *testing.T) {
+func TestErrStopPropagation_TryEmitReturnsNil(t *testing.T) {
 	sig := signals.NewSync[int]()
 	var order []string
-	sig.AddListenerWithErr(func(ctx context.Context, v int) error { order = append(order, "a"); return signals.StopPropagation }, "a")
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { order = append(order, "a"); return signals.ErrStopPropagation }, "a")
 	sig.AddListener(func(ctx context.Context, v int) { order = append(order, "b") }, "b") // must NOT run
 	if err := sig.TryEmit(context.Background(), 1); err != nil {
 		t.Fatalf("TryEmit returned %v; want nil (clean stop)", err)
@@ -449,28 +449,28 @@ func TestStopPropagation_TryEmitReturnsNil(t *testing.T) {
 	}
 }
 
-// A wrapped StopPropagation (errors.Is) is recognized too.
-func TestStopPropagation_WrappedIsRecognized(t *testing.T) {
+// A wrapped ErrStopPropagation (errors.Is) is recognized too.
+func TestErrStopPropagation_WrappedIsRecognized(t *testing.T) {
 	sig := signals.NewSync[int]()
 	ran := 0
 	sig.AddListenerWithErr(func(ctx context.Context, v int) error {
-		return fmt.Errorf("step done, stopping: %w", signals.StopPropagation)
+		return fmt.Errorf("step done, stopping: %w", signals.ErrStopPropagation)
 	}, "a")
 	sig.AddListener(func(ctx context.Context, v int) { ran++ }, "b")
 	if err := sig.TryEmit(context.Background(), 1); err != nil {
-		t.Fatalf("TryEmit returned %v; want nil for wrapped StopPropagation", err)
+		t.Fatalf("TryEmit returned %v; want nil for wrapped ErrStopPropagation", err)
 	}
 	if ran != 0 {
 		t.Fatalf("second listener ran %d times; want 0", ran)
 	}
 }
 
-// StopPropagation halts the reverse walk under LIFO too.
-func TestStopPropagation_LIFOHaltsReverseWalk(t *testing.T) {
+// ErrStopPropagation halts the reverse walk under LIFO too.
+func TestErrStopPropagation_LIFOHaltsReverseWalk(t *testing.T) {
 	sig := signals.NewSyncWithOptions[int](&signals.SignalOptions{Order: signals.LIFO})
 	var order []string
 	sig.AddListener(func(ctx context.Context, v int) { order = append(order, "a") }, "a") // last in LIFO; must be skipped
-	sig.AddListenerWithErr(func(ctx context.Context, v int) error { order = append(order, "b"); return signals.StopPropagation }, "b")
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { order = append(order, "b"); return signals.ErrStopPropagation }, "b")
 	sig.AddListener(func(ctx context.Context, v int) { order = append(order, "c") }, "c") // first in LIFO
 	sig.Emit(context.Background(), 1)
 	if strings.Join(order, ",") != "c,b" {
@@ -479,7 +479,7 @@ func TestStopPropagation_LIFOHaltsReverseWalk(t *testing.T) {
 }
 
 // A genuine error still stops the chain AND is reported (sentinel handling must not swallow real errors).
-func TestStopPropagation_RealErrorStillReported(t *testing.T) {
+func TestErrStopPropagation_RealErrorStillReported(t *testing.T) {
 	sig := signals.NewSync[int]()
 	boom := errors.New("boom")
 	sig.AddListenerWithErr(func(ctx context.Context, v int) error { return boom }, "a")

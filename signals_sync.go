@@ -137,7 +137,7 @@ func (s *SyncSignal[T]) iterStart(n int) (i, step int) {
 // The method blocks until all listeners have completed execution. If the provided
 // context is cancelled or times out, remaining listeners will not be invoked. An
 // error-returning listener (AddListenerWithErr) may stop the chain early by returning
-// signals.StopPropagation: the remaining listeners are skipped, and the sentinel is a
+// signals.ErrStopPropagation: the remaining listeners are skipped, and the sentinel is a
 // control value — it is not routed to the OnError sinks.
 //
 // Parameters:
@@ -164,7 +164,7 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 		sub := &subscribers[i]
 		if sub.listenerErr != nil {
 			err := sub.listenerErr(ctx, payload)
-			if errors.Is(err, StopPropagation) {
+			if errors.Is(err, ErrStopPropagation) {
 				return // listener stopped the chain: skip the rest (not a failure, not routed)
 			}
 			// Emit is best-effort: any other returned error does not stop the chain. Route
@@ -185,7 +185,7 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 //
 // Behavior:
 //   - Invokes listeners sequentially in the signal's configured order (FIFO default, or LIFO)
-//   - A listener returning signals.StopPropagation stops the chain early; TryEmit returns
+//   - A listener returning signals.ErrStopPropagation stops the chain early; TryEmit returns
 //     nil (a clean stop, not an error — the remaining listeners are simply skipped)
 //   - Stops immediately if context is cancelled or any error-returning listener fails
 //   - Returns the first error encountered (context error or listener error)
@@ -231,7 +231,7 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 		sub := &subscribers[i]
 		if sub.listenerErr != nil {
 			err := sub.listenerErr(ctx, payload)
-			if errors.Is(err, StopPropagation) {
+			if errors.Is(err, ErrStopPropagation) {
 				return nil // clean stop: remaining listeners skipped, not reported as an error
 			}
 			if err != nil {

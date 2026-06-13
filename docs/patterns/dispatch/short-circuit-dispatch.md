@@ -2,13 +2,13 @@
 
 **Family:** Dispatch
 · **Also Known As:** Stop Propagation, Halt Chain, Early-Exit Dispatch, First-Responder Dispatch
-· **Status:** ✅ shipped (v1.4 — `signals.StopPropagation` on `SyncSignal`)
+· **Status:** ✅ shipped (v1.4 — `signals.ErrStopPropagation` on `SyncSignal`)
 
 ## Intent
 
 Let a single listener **end a sequential emission early** — so that once one listener
 declares the event *handled*, the **remaining listeners do not run** — without that
-early exit being mistaken for a failure. A listener returns the `signals.StopPropagation`
+early exit being mistaken for a failure. A listener returns the `signals.ErrStopPropagation`
 sentinel; the chain halts cleanly and the emitter still sees success. This is the
 `event.stopPropagation()` / middleware short-circuit idea, expressed as a control value
 rather than an error.
@@ -46,7 +46,7 @@ was a *success* — the system did exactly the right thing — but the only voca
 had was *failure*.
 
 Short-Circuit Dispatch gives the early exit its own word. The stopping listener returns
-the `StopPropagation` sentinel, which halts the remaining listeners **and reports
+the `ErrStopPropagation` sentinel, which halts the remaining listeners **and reports
 success**:
 
 ```go
@@ -58,7 +58,7 @@ BeforeHandler.AddListenerWithErr(serve, "serve")
 func authenticate(ctx context.Context, rc *ReqCtx) error {
     if !rc.Authorized() {
         rc.Status = http.StatusForbidden
-        return signals.StopPropagation // stop the chain — and this is NOT a failure
+        return signals.ErrStopPropagation // stop the chain — and this is NOT a failure
     }
     return nil
 }
@@ -100,7 +100,7 @@ now spelled differently from **stop-with-failure**.
 - **Every listener must always run** regardless of what earlier ones decide → plain
   [Synchronous Sequential Dispatch](synchronous-sequential-dispatch.md) with `Emit`.
 - **The signal is asynchronous.** `AsyncSignal` has no sequential chain to halt and
-  **ignores** `StopPropagation` entirely — there is nothing to short-circuit. This
+  **ignores** `ErrStopPropagation` entirely — there is nothing to short-circuit. This
   pattern is SyncSignal-only.
 - **Only plain listeners are registered.** A `SignalListener[T]` returns nothing and so
   can never stop the chain — only error-returning listeners can.
@@ -116,7 +116,7 @@ now spelled differently from **stop-with-failure**.
                         │ ok
                         ▼
                   Listener₁ ──returns──┐
-                        │              ├─ StopPropagation? ─yes─▶ STOP CHAIN, success
+                        │              ├─ ErrStopPropagation? ─yes─▶ STOP CHAIN, success
                         │              │      (Emit: return; TryEmit: return nil)
                         │              ├─ other non-nil err? ─yes─▶ Emit: route to OnError, CONTINUE
                         │              │                            TryEmit: return err (stop+fail)
@@ -132,17 +132,17 @@ now spelled differently from **stop-with-failure**.
 ```
 
 The same diagram holds under `SignalOptions.Order = signals.LIFO` — the walk is
-most-recently-added first, and `StopPropagation` halts that reverse walk just the same.
+most-recently-added first, and `ErrStopPropagation` halts that reverse walk just the same.
 
 ## Participants
 
 | Participant | Responsibility |
 |-------------|----------------|
 | **Caller (Emitter)** | Calls `Emit` or `TryEmit`; treats a clean stop as success (no error / `nil`) and a real error as failure |
-| **SyncSignal** | Iterates listeners in registration order; on `StopPropagation` skips the remaining listeners and reports success |
-| **Stopping listener** | A `SignalListenerErr[T]` that returns `signals.StopPropagation` (or an error wrapping it) to declare the event handled and end the chain |
+| **SyncSignal** | Iterates listeners in registration order; on `ErrStopPropagation` skips the remaining listeners and reports success |
+| **Stopping listener** | A `SignalListenerErr[T]` that returns `signals.ErrStopPropagation` (or an error wrapping it) to declare the event handled and end the chain |
 | **Downstream listeners** | Later listeners in the chain that are **not invoked** once a stop occurs |
-| **Context** | Carries cancellation/deadline; checked between listeners (a separate stop reason from `StopPropagation`) |
+| **Context** | Carries cancellation/deadline; checked between listeners (a separate stop reason from `ErrStopPropagation`) |
 
 ## Collaborations
 
@@ -152,8 +152,8 @@ most-recently-added first, and `StopPropagation` halts that reverse walk just th
 2. Before each listener the signal checks `ctx`. A canceled context is a *different*
    stop reason: `Emit` returns, `TryEmit` returns `ctx.Err()`.
 3. The signal calls the next listener. If it is an error-returning listener, the signal
-   inspects its return value with `errors.Is(err, StopPropagation)`.
-4. **If it is (or wraps) `StopPropagation`,** the signal **stops immediately** — the
+   inspects its return value with `errors.Is(err, ErrStopPropagation)`.
+4. **If it is (or wraps) `ErrStopPropagation`,** the signal **stops immediately** — the
    remaining listeners do not run — and reports **success**: `TryEmit` returns `nil`,
    and `Emit` does **not** route the sentinel to the `OnError` sinks.
 5. **If it is any other non-nil error,** the two verbs diverge: `TryEmit` stops and
@@ -177,13 +177,13 @@ most-recently-added first, and `StopPropagation` halts that reverse walk just th
 - ✓ **Standard-library idiom.** Mirrors `fs.SkipAll` / `filepath.SkipDir` — a sentinel
   that *controls iteration* rather than *reporting an error* — so Go developers already
   know the shape.
-- ✓ **Detection is `errors.Is`.** Wrapping the sentinel (`fmt.Errorf("...: %w", signals.StopPropagation)`)
+- ✓ **Detection is `errors.Is`.** Wrapping the sentinel (`fmt.Errorf("...: %w", signals.ErrStopPropagation)`)
   to add context still stops the chain, because the signal unwraps it.
 
 **Liabilities**
 
 - ✗ **SyncSignal-only.** `AsyncSignal` invokes listeners concurrently — there is no
-  ordered "rest of the chain" — so it **ignores** `StopPropagation` outright. A listener
+  ordered "rest of the chain" — so it **ignores** `ErrStopPropagation` outright. A listener
   shared between a sync and an async signal stops the former and is a no-op on the latter.
 - ✗ **Error-returning listeners only.** A plain `SignalListener[T]` cannot return the
   sentinel, so it can never stop the chain. The stopping stages must be registered with
@@ -202,12 +202,12 @@ most-recently-added first, and `StopPropagation` halts that reverse walk just th
 
 ## Implementation
 
-1. **Return `signals.StopPropagation` from an error-returning listener to stop.** Only a
+1. **Return `signals.ErrStopPropagation` from an error-returning listener to stop.** Only a
    `SignalListenerErr[T]` (registered via `AddListenerWithErr` or `AddOnceWithErr`) can
    return a value; a plain listener cannot short-circuit. The sentinel is a package-level
-   `var signals.StopPropagation = errors.New(...)` — return it directly, or wrap it.
+   `var signals.ErrStopPropagation = errors.New(...)` — return it directly, or wrap it.
 
-2. **Wrap to add context; it still stops.** `fmt.Errorf("auth denied: %w", signals.StopPropagation)`
+2. **Wrap to add context; it still stops.** `fmt.Errorf("auth denied: %w", signals.ErrStopPropagation)`
    is detected via `errors.Is` and halts the chain just like the bare sentinel — the
    wrapping is for *your* logs, not for the signal. Do **not** wrap with `%v` (that
    breaks the chain and the sentinel is lost).
@@ -224,12 +224,12 @@ most-recently-added first, and `StopPropagation` halts that reverse walk just th
    exact bug the pattern exists to prevent.
 
 5. **It composes with `SignalOptions.Order`.** Under `LIFO` the chain walks
-   most-recently-added first; `StopPropagation` halts that reverse walk too, so the
+   most-recently-added first; `ErrStopPropagation` halts that reverse walk too, so the
    *newest* handler can veto the older ones. See
    [Reverse (LIFO) Dispatch](reverse-dispatch.md).
 
 6. **AsyncSignal ignores it — by design.** On an `AsyncSignal`, a listener returning
-   `StopPropagation` is neither joined by `TryEmit` nor routed to `OnError` nor given any
+   `ErrStopPropagation` is neither joined by `TryEmit` nor routed to `OnError` nor given any
    other effect: there is no sequential propagation to stop. Keep stop-logic on the sync
    signal. This also keeps a listener that may run on either signal type well-defined —
    the sentinel is never mistaken for an error anywhere.
@@ -256,7 +256,7 @@ sig := signals.NewSync[Event]()
 // 2. LISTENERS — error-returning, because only those can stop the chain.
 sig.AddListenerWithErr(func(ctx context.Context, e Event) error {
     if handled(e) {
-        return signals.StopPropagation // STOP: later listeners are skipped, this is success
+        return signals.ErrStopPropagation // STOP: later listeners are skipped, this is success
     }
     return nil // not handled — let the next listener try
 }, "first-responder")
@@ -267,7 +267,7 @@ sig.AddListenerWithErr(func(ctx context.Context, e Event) error {
 
 // 3. CALLER — TryEmit returns nil on a clean stop, the error on a real failure.
 err := sig.TryEmit(ctx, e)
-//   ├─ a listener returns StopPropagation → chain stops, TryEmit returns nil (success)
+//   ├─ a listener returns ErrStopPropagation → chain stops, TryEmit returns nil (success)
 //   ├─ a listener returns a real error    → chain stops, TryEmit returns that error (failure)
 //   ├─ ctx canceled                        → returns ctx.Err()
 //   └─ all listeners return nil            → returns nil
@@ -312,7 +312,7 @@ func Init(auth AuthService, cache Cache) {
         uid, ok := auth.Verify(ctx, c.R.Header.Get("Authorization"))
         if !ok {
             c.Status = http.StatusForbidden
-            return signals.StopPropagation // deny: cache + handler never run; NOT an error
+            return signals.ErrStopPropagation // deny: cache + handler never run; NOT an error
         }
         c.UserID = uid
         return nil // authorized — fall through to the next stage
@@ -322,7 +322,7 @@ func Init(auth AuthService, cache Cache) {
     BeforeHandler.AddListenerWithErr(func(ctx context.Context, c *ReqCtx) error {
         if body, ok := cache.Get(ctx, c.R.URL.Path); ok {
             c.Status, c.Body = http.StatusOK, body
-            return signals.StopPropagation // first responder wins: handler never runs
+            return signals.ErrStopPropagation // first responder wins: handler never runs
         }
         return nil // miss — let the real handler produce the response
     }, "cache")
@@ -361,7 +361,7 @@ would have logged every 403 and every cache hit as a server error.
 
 The single most important distinction in this pattern. Both listeners *stop* the chain;
 they differ only in whether the stop is a **success** (sentinel) or a **failure** (real
-error). The contrast is what `StopPropagation` exists to make expressible.
+error). The contrast is what `ErrStopPropagation` exists to make expressible.
 
 ```go
 package gate
@@ -390,7 +390,7 @@ func Init(policy PolicyBackend) {
         if isTrusted(s) {
             s.Vote = "auto-approved"
             // Wrapping the sentinel keeps the stop AND adds a breadcrumb for logs.
-            return fmt.Errorf("trusted author %s: %w", s.ID, signals.StopPropagation)
+            return fmt.Errorf("trusted author %s: %w", s.ID, signals.ErrStopPropagation)
         }
         return nil // not auto-approved — let the next stage evaluate
     }, "auto-approve")
@@ -410,7 +410,7 @@ func Run(ctx context.Context, s *Submission) error {
     err := Review.TryEmit(ctx, s)
     switch {
     case err == nil:
-        // EITHER every stage passed, OR a stage short-circuited with StopPropagation.
+        // EITHER every stage passed, OR a stage short-circuited with ErrStopPropagation.
         // Both are success: s.Vote holds the outcome ("auto-approved" or the verdict).
         return nil
     case errors.Is(err, ErrBackendDown):
@@ -428,7 +428,7 @@ Note the asymmetry the pattern hinges on:
 - `policy` returns a **real error** → the chain stops and `TryEmit` returns that error.
   The submission *failed*.
 
-`errors.Is(err, signals.StopPropagation)` is **never** true at the call site, because
+`errors.Is(err, signals.ErrStopPropagation)` is **never** true at the call site, because
 `TryEmit` translates a clean stop to `nil` before returning. The sentinel is consumed
 inside the signal; the caller only ever sees `nil` (handled or fully-passed) or a real
 error.
@@ -436,16 +436,16 @@ error.
 ## Variations
 
 - **First-responder / first-match.** A chain of candidate handlers; the first one that
-  can handle the event sets the result and returns `StopPropagation`. Classic for
+  can handle the event sets the result and returns `ErrStopPropagation`. Classic for
   command routers, key-binding tables, and content negotiators.
 - **Veto / gate.** A single early stage may reject the operation (auth, feature flag,
-  quota) and stop the rest with `StopPropagation`. The decision rides on the payload.
+  quota) and stop the rest with `ErrStopPropagation`. The decision rides on the payload.
 - **LIFO veto.** Under `SignalOptions.Order = signals.LIFO`, the *newest* handler runs
   first and can short-circuit the older ones — "the latest override wins." See
   [Reverse (LIFO) Dispatch](reverse-dispatch.md).
-- **Wrapped sentinel for tracing.** Return `fmt.Errorf("handled by %s: %w", name, signals.StopPropagation)`
+- **Wrapped sentinel for tracing.** Return `fmt.Errorf("handled by %s: %w", name, signals.ErrStopPropagation)`
   so the stop carries a breadcrumb in logs while still halting the chain via `errors.Is`.
-- **Best-effort short-circuit on `Emit`.** On `Emit` (not `TryEmit`), `StopPropagation`
+- **Best-effort short-circuit on `Emit`.** On `Emit` (not `TryEmit`), `ErrStopPropagation`
   still stops the chain and is not routed to `OnError`, while *real* errors are routed
   and the chain continues — useful when stopping is meaningful but ordinary listener
   errors should not abort notification.
@@ -460,7 +460,7 @@ error.
   (auth deny, cache hit) without invoking the inner handlers.
 - **Go stdlib `fs.SkipAll` / `filepath.SkipDir`.** Sentinel errors returned from a walk
   callback that *control iteration* — stop the walk — without being treated as a failure.
-  `StopPropagation` is the same convention applied to signal dispatch.
+  `ErrStopPropagation` is the same convention applied to signal dispatch.
 - **Chain-of-Responsibility (GoF).** The first handler that can service the request
   consumes it and the rest of the chain is skipped — first-responder dispatch is exactly
   this.
@@ -481,5 +481,5 @@ error.
   here, the *sentinel* stops the chain and is **not** an error. Same "halt on first,"
   opposite meaning: failure vs. handled-success.
 - **[Async Error Routing](../reliability/async-error-routing.md)** — contrast for the
-  async case: `AsyncSignal` has no chain to short-circuit, ignores `StopPropagation`,
+  async case: `AsyncSignal` has no chain to short-circuit, ignores `ErrStopPropagation`,
   and routes genuine listener errors to the per-signal sink instead.
