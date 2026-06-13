@@ -2,6 +2,7 @@ package signals
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -134,7 +135,10 @@ func (s *SyncSignal[T]) iterStart(n int) (i, step int) {
 // The order is stable across add/remove because removal preserves order.
 //
 // The method blocks until all listeners have completed execution. If the provided
-// context is cancelled or times out, remaining listeners will not be invoked.
+// context is cancelled or times out, remaining listeners will not be invoked. An
+// error-returning listener (AddListenerWithErr) may stop the chain early by returning
+// signals.StopPropagation: the remaining listeners are skipped, and the sentinel is a
+// control value — it is not routed to the OnError sinks.
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout. Checked before each listener invocation.
@@ -159,10 +163,14 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 		}
 		sub := &subscribers[i]
 		if sub.listenerErr != nil {
-			// Emit is best-effort: a returned error does not stop the chain. Route it to
-			// the OnError sinks (symmetric with AsyncSignal) instead of discarding it —
+			err := sub.listenerErr(ctx, payload)
+			if errors.Is(err, StopPropagation) {
+				return // listener stopped the chain: skip the rest (not a failure, not routed)
+			}
+			// Emit is best-effort: any other returned error does not stop the chain. Route
+			// it to the OnError sinks (symmetric with AsyncSignal) instead of discarding it —
 			// use TryEmit if you need errors returned and the chain to stop on the first.
-			if err := sub.listenerErr(ctx, payload); err != nil {
+			if err != nil {
 				s.baseSignal.routeError(ctx, err)
 			}
 		} else if sub.listener != nil {
@@ -177,6 +185,8 @@ func (s *SyncSignal[T]) Emit(ctx context.Context, payload T) {
 //
 // Behavior:
 //   - Invokes listeners sequentially in the signal's configured order (FIFO default, or LIFO)
+//   - A listener returning signals.StopPropagation stops the chain early; TryEmit returns
+//     nil (a clean stop, not an error — the remaining listeners are simply skipped)
 //   - Stops immediately if context is cancelled or any error-returning listener fails
 //   - Returns the first error encountered (context error or listener error)
 //   - Returns nil if all listeners complete successfully
@@ -220,7 +230,11 @@ func (s *SyncSignal[T]) TryEmit(ctx context.Context, payload T) error {
 		}
 		sub := &subscribers[i]
 		if sub.listenerErr != nil {
-			if err := sub.listenerErr(ctx, payload); err != nil {
+			err := sub.listenerErr(ctx, payload)
+			if errors.Is(err, StopPropagation) {
+				return nil // clean stop: remaining listeners skipped, not reported as an error
+			}
+			if err != nil {
 				return err
 			}
 		} else if sub.listener != nil {

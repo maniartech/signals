@@ -513,3 +513,20 @@ func TestAsyncErr_TryEmitJoinRaceFree(t *testing.T) {
 		}
 	}
 }
+
+// StopPropagation is a sync-only control value: AsyncSignal has no sequential chain to
+// stop, so it never reports the sentinel as a failure — not joined by TryEmit, and (on
+// the Emit path) not routed to OnError. A real error from a sibling still surfaces.
+func TestStopPropagation_AsyncIgnoredAsFailure(t *testing.T) {
+	sig := signals.New[int]()
+	real := errors.New("real")
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { return signals.StopPropagation })
+	sig.AddListenerWithErr(func(ctx context.Context, v int) error { return real })
+	err := sig.TryEmit(context.Background(), 1)
+	if !errors.Is(err, real) {
+		t.Fatalf("TryEmit err = %v; want it to contain the real error", err)
+	}
+	if errors.Is(err, signals.StopPropagation) {
+		t.Fatal("StopPropagation must not be reported as a failure by async TryEmit")
+	}
+}

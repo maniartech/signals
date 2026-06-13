@@ -1,6 +1,26 @@
 package signals
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// StopPropagation is a sentinel a SignalListenerErr returns to stop a SyncSignal's
+// emission early: when a listener returns it (or an error wrapping it), the remaining
+// listeners for that emission are not invoked. It is a CONTROL value, not a failure —
+// SyncSignal.TryEmit returns nil (not this sentinel) when a listener stops the chain,
+// and SyncSignal.Emit does not route it to the OnError sinks. It mirrors the standard
+// library's fs.SkipAll / filepath.SkipDir convention.
+//
+// Because AsyncSignal invokes listeners concurrently, it has no sequential propagation
+// to stop, so it IGNORES StopPropagation entirely: a listener returning it is neither
+// reported as a failure (never joined by TryEmit, never routed to OnError) nor given
+// any other effect. This keeps a listener that may run on either signal type
+// well-defined: StopPropagation is never mistaken for an error anywhere.
+//
+// Only error-returning listeners (AddListenerWithErr / AddOnceWithErr) can stop the
+// chain — a plain SignalListener has no return value. Detect it with errors.Is.
+var StopPropagation = errors.New("signals: stop propagation")
 
 // SignalListener defines the function signature for standard signal listeners.
 // Listeners are invoked when a signal is emitted and receive both context and payload.

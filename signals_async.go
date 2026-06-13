@@ -332,7 +332,10 @@ func (s *AsyncSignal[T]) dispatch(ctx context.Context, payload T, subscribers []
 					}
 				}()
 				if kl.listenerErr != nil {
-					if err := kl.listenerErr(ctx, payload); err != nil {
+					// StopPropagation is a sync-only control value; async has no sequential
+					// chain to stop, so it is never reported as a failure here (not joined,
+					// not routed) — keeping a listener that may run on either type well-defined.
+					if err := kl.listenerErr(ctx, payload); err != nil && !errors.Is(err, StopPropagation) {
 						if errs != nil {
 							errs[idx] = err // distinct index — no lock needed
 						} else {
