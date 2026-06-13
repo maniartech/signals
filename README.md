@@ -17,6 +17,7 @@ simple APIs, context propagation, and predictable concurrency behavior.
 - **Two Signal Types**: Async for fire-and-forget, Sync for error-aware workflows
 - **Context-Aware**: All listeners receive context for cancellation and timeouts
 - **Error Handling**: `TryEmit` (sync: stop-on-first-error; async: `errors.Join` of all) and `OnError` sinks on the best-effort `Emit` path
+- **Short-Circuit**: a sync listener can return `signals.StopPropagation` to halt the chain early (a control value, not a failure — like `fs.SkipAll`)
 - **Lock-Free Reads**: Copy-on-write core — `Emit` is a single atomic load, no lock or allocation on the read path
 - **Ordered Dispatch**: Sync `Emit` runs listeners FIFO (default) or `LIFO` (handler-stack / reverse-teardown), and order is **stable across add/remove**
 - **Thread-Safe**: Safe for concurrent Add/Remove/Emit, proven under `-race` with property + fuzz + stress tests
@@ -285,6 +286,16 @@ OrderCreated.AddOnceWithErr(func(ctx context.Context, order Order) error {
     return auditOnce(order)
 })
 
+// Short-circuit: a listener can halt the chain early so later listeners don't run.
+// StopPropagation is a control value, NOT a failure — TryEmit returns nil and Emit
+// does not route it to OnError. (A real error still stops AND is reported.)
+OrderCreated.AddListenerWithErr(func(ctx context.Context, order Order) error {
+    if order.AlreadyHandled {
+        return signals.StopPropagation // skip the remaining listeners, cleanly
+    }
+    return nil
+})
+
 // Error-safe emit with context cancellation
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
@@ -381,6 +392,7 @@ from the problem you have:
 |--------|---------|------------------------|
 | **Dispatch** — how an emission reaches listeners | [Synchronous Sequential Dispatch](docs/patterns/dispatch/synchronous-sequential-dispatch.md) | Run listeners one at a time, in registration order, on the caller's goroutine; the emit blocks until all finish. |
 | | [Reverse (LIFO) Dispatch](docs/patterns/dispatch/reverse-dispatch.md) | Run sync listeners newest-first — the handler-stack discipline: unwind handlers in reverse of setup, or let the most-recent override win. |
+| | [Short-Circuit Dispatch](docs/patterns/dispatch/short-circuit-dispatch.md) | Let a listener stop the chain early (return `signals.StopPropagation`) so later listeners don't run — first-responder / middleware short-circuit. |
 | | [Fire-and-Forget Dispatch](docs/patterns/dispatch/fire-and-forget-dispatch.md) | Notify others and immediately regain control of the caller — listeners run in the background. |
 | | [Await-All Dispatch](docs/patterns/dispatch/await-all-dispatch.md) | Run listeners concurrently, but wait for every one to finish before continuing. |
 | **Reliability** — how errors & panics are handled | [Transactional Emission](docs/patterns/reliability/transactional-emission.md) | Stop the whole chain on the first failure and return that error (all-or-nothing). |

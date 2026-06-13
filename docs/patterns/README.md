@@ -24,7 +24,7 @@ subscribers?* → *how do I structure the whole app?*
 
 | # | Family | The question it answers | Patterns |
 |---|--------|-------------------------|----------|
-| 1 | **[Dispatch](#family-1--dispatch)** | How is an emission delivered to listeners? | Synchronous Sequential · Reverse (LIFO) · Fire-and-Forget · Await-All |
+| 1 | **[Dispatch](#family-1--dispatch)** | How is an emission delivered to listeners? | Synchronous Sequential · Reverse (LIFO) · Short-Circuit · Fire-and-Forget · Await-All |
 | 2 | **[Reliability](#family-2--reliability)** | How do failures (errors, panics) get handled? | Transactional Emission · Async Error Routing · Result Aggregation · Panic Isolation |
 | 3 | **[Flow-Control](#family-3--flow-control)** | How does the system behave under load? | Bounded Concurrency · Load Shedding · Backpressure |
 | 4 | **[Subscription Lifecycle](#family-4--subscription-lifecycle)** | How are listeners registered, replaced, removed? | Keyed Subscription · One-Shot Subscription · Subscription Teardown |
@@ -40,6 +40,7 @@ Find your situation, jump to the pattern.
 |---|---|
 | Run listeners in a guaranteed order and wait for them | [Synchronous Sequential Dispatch](dispatch/synchronous-sequential-dispatch.md) |
 | Run sync listeners newest-first / unwind handlers in reverse | [Reverse (LIFO) Dispatch](dispatch/reverse-dispatch.md) |
+| Let a listener stop the chain early so later listeners don't run | [Short-Circuit Dispatch](dispatch/short-circuit-dispatch.md) |
 | Notify others and keep moving (losing one under extreme load is OK) | [Fire-and-Forget Dispatch](dispatch/fire-and-forget-dispatch.md) |
 | Run listeners concurrently but wait for all to finish | [Await-All Dispatch](dispatch/await-all-dispatch.md) |
 | Stop the whole chain on the first failure and get the error | [Transactional Emission](reliability/transactional-emission.md) |
