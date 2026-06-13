@@ -175,11 +175,11 @@ there is no race on the shared `*Order`.
    (`MaxConcurrent`) is meaningless for a sync signal — there is no
    concurrency to bound.
 
-2. **Order is registration order — but mind removals.** Listeners fire in the order
-   added. Per the API reference, removal uses *swap-remove*, so calling
-   `RemoveListener` can reorder the *remaining* listeners. If exact order must survive
-   churn, prefer a stable design: register the full pipeline once at startup and avoid
-   mid-life removals, or model the pipeline as a single composite listener.
+2. **Order is registration order, stable across removals.** Listeners fire in the order
+   added (FIFO), or reverse order if the signal is constructed with
+   `SignalOptions.Order = signals.LIFO` (see [Reverse (LIFO) Dispatch](reverse-dispatch.md)).
+   Removal is **order-preserving**, so `RemoveListener` does not disturb the order of the
+   remaining listeners — the pipeline order survives churn.
 
 3. **Cancellation is checked between listeners, not inside them.** The signal inspects
    `ctx` before each listener and stops the chain if it is done. It **cannot** preempt

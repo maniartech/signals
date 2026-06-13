@@ -18,6 +18,7 @@ simple APIs, context propagation, and predictable concurrency behavior.
 - **Context-Aware**: All listeners receive context for cancellation and timeouts
 - **Error Handling**: `TryEmit` (sync: stop-on-first-error; async: `errors.Join` of all) and `OnError` sinks on the best-effort `Emit` path
 - **Lock-Free Reads**: Copy-on-write core — `Emit` is a single atomic load, no lock or allocation on the read path
+- **Ordered Dispatch**: Sync `Emit` runs listeners FIFO (default) or `LIFO` (handler-stack / reverse-teardown), and order is **stable across add/remove**
 - **Thread-Safe**: Safe for concurrent Add/Remove/Emit, proven under `-race` with property + fuzz + stress tests
 - **Rich Subscriptions**: `AddOnce`/`AddOnceWithErr` one-shots, `AddListenerWithCancel`/`AddOnceWithCancel` handle-based teardown, plus `Keys`/`HasKey` introspection
 - **Bounded Async Dispatch**: opt-in `MaxConcurrent` counting-semaphore safety valve (unbounded by default)
@@ -331,6 +332,11 @@ bounded := signals.NewWithOptions[User](&signals.SignalOptions{
 })
 _ = bounded
 
+// LIFO sync dispatch: most-recently-added listener runs first (handler stack /
+// reverse teardown). Order is stable across add/remove. Sync-only; FIFO is default.
+stack := signals.NewSyncWithOptions[User](&signals.SignalOptions{Order: signals.LIFO})
+_ = stack
+
 // Context cancellation
 ctx, cancel := context.WithCancel(context.Background())
 go func() {
@@ -374,6 +380,7 @@ from the problem you have:
 | Family | Pattern | What problem it solves |
 |--------|---------|------------------------|
 | **Dispatch** — how an emission reaches listeners | [Synchronous Sequential Dispatch](docs/patterns/dispatch/synchronous-sequential-dispatch.md) | Run listeners one at a time, in registration order, on the caller's goroutine; the emit blocks until all finish. |
+| | [Reverse (LIFO) Dispatch](docs/patterns/dispatch/reverse-dispatch.md) | Run sync listeners newest-first — the handler-stack discipline: unwind handlers in reverse of setup, or let the most-recent override win. |
 | | [Fire-and-Forget Dispatch](docs/patterns/dispatch/fire-and-forget-dispatch.md) | Notify others and immediately regain control of the caller — listeners run in the background. |
 | | [Await-All Dispatch](docs/patterns/dispatch/await-all-dispatch.md) | Run listeners concurrently, but wait for every one to finish before continuing. |
 | **Reliability** — how errors & panics are handled | [Transactional Emission](docs/patterns/reliability/transactional-emission.md) | Stop the whole chain on the first failure and return that error (all-or-nothing). |

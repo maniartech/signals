@@ -184,9 +184,8 @@ rolls forward only while each statement succeeds.
 
 3. **Registration order is the execution order.** `SyncSignal` preserves registration
    order, so add your steps in the order they must run: validate first, capture last.
-   Note that a `RemoveListener` uses swap-remove, which can reorder the *remaining*
-   listeners — do not remove and re-add steps mid-pipeline and expect the original
-   order to survive.
+   Removal is **order-preserving**, so a `RemoveListener` does not reorder the remaining
+   steps — the pipeline order survives mid-life add/remove.
 
 4. **Context is checked between listeners, not inside them.** The signal short-circuits
    *between* steps on cancellation, but a listener already running to completion is not

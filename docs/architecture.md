@@ -154,10 +154,12 @@ func (s *BaseSignal[T]) add(kl keyedListener[T]) int {
 }
 ```
 
-`RemoveListener` uses a **swap-remove** inside the freshly copied slice: it moves the
-last element into the removed slot and truncates. That makes removal O(1) within the
-new slice but **reorders** the remaining listeners (registration order is not
-preserved after a removal). The duplicate-key map is updated under the same lock.
+`RemoveListener` is **order-preserving**: it builds the fresh slice by copying every
+listener except the matched one, keeping the relative order of the rest. So a
+`SyncSignal`'s emission order (FIFO or LIFO) is **stable across removals** — registration
+order is a real guarantee, not best-effort. It copies n-1 elements, the same O(n) the
+whole-slice copy every write already pays. The duplicate-key map is updated under the
+same lock.
 
 `Reset` simply publishes a new empty slice and a new empty map.
 
@@ -541,8 +543,8 @@ func (b *EventBus) ProcessPayment(ctx context.Context, e PaymentEvent) error {
 |-----------|------|--------------|
 | `BaseSignal[T]` | Shared listener registry | Immutable slice behind `atomic.Pointer`; lock-free reads, copy-on-write writes |
 | `writeMu` | Writer serialization | `sync.Mutex` taken only by Add/Remove/Reset |
-| `subscribersMap` | Duplicate-key detection | `map[string]struct{}` guarded by `writeMu`; swap-remove on delete |
-| `SyncSignal[T]` | Sequential emission | Runs listeners in order on the caller's goroutine; `TryEmit` stops on first error |
+| `subscribersMap` | Duplicate-key detection | `map[string]struct{}` guarded by `writeMu`; order-preserving delete |
+| `SyncSignal[T]` | Sequential emission | Runs listeners in FIFO or LIFO order (stable across removals) on the caller's goroutine; `TryEmit` stops on first error |
 | `AsyncSignal[T]` | Concurrent emission | Goroutine per listener; `Emit` fire-and-forget, `TryEmit` waits and joins errors |
 | `slots` semaphore | Optional async bound | `MaxConcurrent` counting semaphore — a safety valve, not a worker pool |
 | Prime growth | Capacity policy | Prime-number sequence, configurable via `SignalOptions` |
